@@ -1,4 +1,9 @@
 # --------------------------
+# ✅ Windows 客户端 下载地址
+# --------------------------
+https://github.com/fatedier/frp/releases/download/v0.62.1/frp_0.62.1_windows_amd64.zip
+
+# --------------------------
 # ✅ Windows 客户端 frpc.ini（保存到 E:\mypython\xray_custom）
 # --------------------------
 [common]
