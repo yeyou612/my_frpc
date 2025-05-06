@@ -30,7 +30,11 @@ tar -zxvf frp_${FRP_VERSION}_linux_amd64.tar.gz
 if pgrep -x "frps" > /dev/null; then
   echo "⚠️ 检测到 frps 正在运行，正在尝试停止..."
   systemctl stop frps || true
-  sleep 1
+  sleep 2
+  while fuser "$INSTALL_DIR/frps" 2>/dev/null | grep -q .; do
+    echo "⏳ 等待 frps 文件释放中..."
+    sleep 1
+  done
 fi
 
 cp frp_${FRP_VERSION}_linux_amd64/frps $INSTALL_DIR/
