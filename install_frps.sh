@@ -9,6 +9,14 @@ set -e
 FRP_VERSION=0.58.0
 INSTALL_DIR=/usr/local/frp
 
+check_installed() {
+  if [[ -f "$INSTALL_DIR/frps" ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
 show_menu() {
   echo "========================="
   echo " FRPS 一键管理脚本"
@@ -30,6 +38,12 @@ show_menu() {
 }
 
 install_frps() {
+  if check_installed; then
+    echo "⚠️ 已检测到 frps 已安装在 $INSTALL_DIR"
+    show_menu
+    return
+  fi
+
   read -p "请输入 Dashboard 用户名（默认 admin）: " DASH_USER
   read -p "请输入 Dashboard 密码（默认 admin123）: " DASH_PWD
   DASH_USER=${DASH_USER:-admin}
@@ -92,6 +106,8 @@ EOF
   ufw allow 6002 || true
   ufw enable || true
 
+  echo "✅ frps 已安装成功，当前配置如下："
+  cat $INSTALL_DIR/frps.ini
   systemctl status frps --no-pager
 }
 
@@ -113,5 +129,11 @@ uninstall_frps() {
   echo "✅ frps 已完全卸载。"
 }
 
-# 执行主菜单
+# 启动脚本前判断安装状态
+if check_installed; then
+  echo "✅ 已检测到 frps 安装，进入菜单模式管理："
+else
+  echo "🆕 未检测到 frps，可进行安装："
+fi
+
 show_menu
