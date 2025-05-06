@@ -37,7 +37,8 @@ if pgrep -x "frps" > /dev/null; then
   done
 fi
 
-cp frp_${FRP_VERSION}_linux_amd64/frps $INSTALL_DIR/
+cp frp_${FRP_VERSION}_linux_amd64/frps $INSTALL_DIR/frps.new
+mv -f $INSTALL_DIR/frps.new $INSTALL_DIR/frps
 
 # 写入配置文件
 cat > $INSTALL_DIR/frps.ini <<EOF
