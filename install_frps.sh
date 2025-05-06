@@ -1,11 +1,17 @@
-
 # --------------------------
-# ✅ 一键部署脚本 install_frps.sh（仅适用于 VPS 服务端）
+# ✅ 一键部署脚本 install_frps.sh（带交互设置 + 可卸载）
 # --------------------------
 
 #!/bin/bash
 
 set -e
+
+# 交互输入
+read -p "请输入 Dashboard 用户名（默认 admin）: " DASH_USER
+read -p "请输入 Dashboard 密码（默认 admin123）: " DASH_PWD
+
+DASH_USER=${DASH_USER:-admin}
+DASH_PWD=${DASH_PWD:-admin123}
 
 # 配置参数
 FRP_VERSION=0.58.0
@@ -26,8 +32,8 @@ cat > $INSTALL_DIR/frps.ini <<EOF
 [common]
 bind_port = 7000
 dashboard_port = 7500
-dashboard_user = admin
-dashboard_pwd = admin123
+dashboard_user = ${DASH_USER}
+dashboard_pwd = ${DASH_PWD}
 log_level = info
 log_file = /var/log/frps.log
 authentication_method = token
@@ -65,3 +71,20 @@ ufw enable || true
 
 # 输出状态
 systemctl status frps --no-pager
+
+
+# --------------------------
+# ✅ 卸载脚本 uninstall_frps.sh
+# --------------------------
+
+#!/bin/bash
+
+set -e
+
+systemctl stop frps
+systemctl disable frps
+rm -f /etc/systemd/system/frps.service
+rm -rf /usr/local/frp
+systemctl daemon-reload
+
+echo "✅ frps 已完全卸载。"
