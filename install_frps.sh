@@ -96,8 +96,17 @@ EOF
 }
 
 uninstall_frps() {
-  systemctl stop frps
-  systemctl disable frps
+  if systemctl is-active --quiet frps; then
+    echo "🔍 检测到 frps 正在运行，正在停止服务..."
+    systemctl stop frps
+  fi
+
+  if systemctl is-enabled --quiet frps; then
+    echo "🔧 正在移除开机启动配置..."
+    systemctl disable frps
+  fi
+
+  echo "🗑️ 正在清理配置与文件..."
   rm -f /etc/systemd/system/frps.service
   rm -rf /usr/local/frp
   systemctl daemon-reload
