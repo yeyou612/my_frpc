@@ -25,6 +25,14 @@ cd /tmp
 wget https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz
 
 tar -zxvf frp_${FRP_VERSION}_linux_amd64.tar.gz
+
+# 检查是否正在运行，避免覆盖错误
+if pgrep -x "frps" > /dev/null; then
+  echo "⚠️ 检测到 frps 正在运行，正在尝试停止..."
+  systemctl stop frps || true
+  sleep 1
+fi
+
 cp frp_${FRP_VERSION}_linux_amd64/frps $INSTALL_DIR/
 
 # 写入配置文件
