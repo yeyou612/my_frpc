@@ -6,9 +6,10 @@
 
 set -e
 
+read -p "请输入服务端公网 IP 或域名: " VPS_IP
+
 FRP_VERSION=0.58.0
 INSTALL_DIR=/usr/local/frp
-VPS_IP="YOUR_VPS_PUBLIC_IP"
 
 mkdir -p $INSTALL_DIR
 cd /tmp
@@ -61,3 +62,20 @@ systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable frpc
 systemctl start frpc
+
+
+# --------------------------
+# ✅ 卸载脚本 uninstall_frpc.sh
+# --------------------------
+
+#!/bin/bash
+
+set -e
+
+systemctl stop frpc
+systemctl disable frpc
+rm -f /etc/systemd/system/frpc.service
+rm -rf /usr/local/frp
+systemctl daemon-reload
+
+echo "✅ frpc 已完全卸载。"
