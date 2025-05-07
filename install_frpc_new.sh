@@ -120,7 +120,37 @@ list_tunnels() {
     return 0
 }
 
-# 安装 FRP 客户端
+download_with_proxy() {
+    echo -e "${BLUE}正在下载 FRP ${FRP_VERSION}...${NC}"
+    cd /tmp
+    
+    # 询问是否使用代理
+    read -p "是否使用代理下载？(y/n): " use_proxy
+    if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
+        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+        
+        echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
+        curl -L -o frp_${FRP_VERSION}_linux_amd64.tar.gz --proxy http://${proxy_address} "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz" || {
+            echo -e "${RED}代理下载失败，请检查代理设置或尝试直接下载。${NC}"
+            return 1
+        }
+    else
+        echo -e "${YELLOW}尝试直接下载...${NC}"
+        curl -L -o frp_${FRP_VERSION}_linux_amd64.tar.gz "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz" || {
+            echo -e "${RED}直接下载失败，建议使用代理。${NC}"
+            return 1
+        }
+    fi
+    
+    # 检查文件是否成功下载和有效
+    if [ ! -f "frp_${FRP_VERSION}_linux_amd64.tar.gz" ] || [ ! -s "frp_${FRP_VERSION}_linux_amd64.tar.gz" ]; then
+        echo -e "${RED}下载的文件不存在或为空！${NC}"
+        return 1
+    fi
+    
+    return 0
+}
+
 # 安装 FRP 客户端
 install_frpc() {
     # 如果已安装，询问是否重新安装
@@ -137,43 +167,28 @@ install_frpc() {
     
     # 如果是新安装，则下载并安装 FRP
     if [ ! -f "$INSTALL_DIR/frpc" ]; then
-        echo -e "${BLUE}正在下载 FRP ${FRP_VERSION}...${NC}"
-        cd /tmp
-        
-        # 使用curl直接下载（可能比wget更稳定）
-        echo -e "${YELLOW}尝试使用curl下载...${NC}"
-        curl -L -o frp.tar.gz "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz"
-        
-        # 检查文件是否为gzip格式
-        if file frp.tar.gz | grep -q "gzip"; then
-            echo -e "${GREEN}下载成功！${NC}"
-        else
-            echo -e "${YELLOW}下载的文件不是有效的gzip格式，尝试使用另一种方法...${NC}"
-            rm -f frp.tar.gz
-            
-            # 尝试直接使用wget
-            wget --no-check-certificate -O frp.tar.gz "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz"
-            
-            # 再次检查
-            if ! file frp.tar.gz | grep -q "gzip"; then
-                echo -e "${RED}下载失败，文件格式不正确。${NC}"
-                echo -e "${YELLOW}请尝试手动下载FRP并将文件放置在 ${INSTALL_DIR} 目录下。${NC}"
-                exit 1
-            fi
+        # 使用下载函数下载FRP
+        if ! download_with_proxy; then
+            echo -e "${RED}FRP 下载失败，请检查网络连接或代理设置。${NC}"
+            return 1
         fi
         
         echo -e "${BLUE}正在安装 FRP 客户端...${NC}"
-        tar -zxf frp.tar.gz
-        cp frp_${FRP_VERSION}_linux_amd64/frpc $INSTALL_DIR/
+        tar -zxf frp_${FRP_VERSION}_linux_amd64.tar.gz || {
+            echo -e "${RED}解压失败，可能下载的文件不完整或已损坏。${NC}"
+            return 1
+        }
         
-        # 检查复制是否成功
-        if [ ! -f "$INSTALL_DIR/frpc" ]; then
-            echo -e "${RED}安装失败，未能复制FRP客户端到安装目录。${NC}"
-            exit 1
-        fi
+        cp frp_${FRP_VERSION}_linux_amd64/frpc $INSTALL_DIR/ || {
+            echo -e "${RED}复制文件失败。${NC}"
+            return 1
+        }
+        
+        # 确保可执行
+        chmod +x $INSTALL_DIR/frpc
         
         # 清理临时文件
-        rm -f frp.tar.gz
+        rm -f frp_${FRP_VERSION}_linux_amd64.tar.gz
         rm -rf frp_${FRP_VERSION}_linux_amd64
     fi
 
