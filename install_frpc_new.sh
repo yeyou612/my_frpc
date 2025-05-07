@@ -138,7 +138,13 @@ install_frpc() {
     if [ ! -f "$INSTALL_DIR/frpc" ]; then
         echo -e "${BLUE}正在下载 FRP ${FRP_VERSION}...${NC}"
         cd /tmp
-        wget -q --show-progress https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz
+        wget -q --show-progress https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz || {
+            echo -e "${YELLOW}镜像下载失败，尝试直接下载...${NC}"
+            wget -q --show-progress --timeout=10 https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz || {
+                echo -e "${RED}下载失败，请检查网络连接或手动下载。${NC}"
+                exit 1
+            }
+        }
         
         echo -e "${BLUE}正在安装 FRP 客户端...${NC}"
         tar -zxf frp_${FRP_VERSION}_linux_amd64.tar.gz
