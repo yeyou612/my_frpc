@@ -14,7 +14,7 @@ RED="\033[0;31m"
 NC="\033[0m" # 无颜色
 
 # 定义常量
-FRP_VERSION=0.58.0
+FRP_VERSION=0.62.1
 INSTALL_DIR=/usr/local/frp
 SERVICE_FILE=/etc/systemd/system/frpc.service
 CONFIG_FILE=$INSTALL_DIR/frpc.ini
@@ -142,10 +142,10 @@ install_frpc() {
         
         echo -e "${BLUE}正在安装 FRP 客户端...${NC}"
         tar -zxf frp_${FRP_VERSION}_linux_amd64.tar.gz
-        cp frp_${FRP_VERSION}_linux_amd64/frpc $INSTALL_DIR/
+        cp frp_${}_linux_amd64/frpc $INSTALL_DIR/
         
         # 清理临时文件
-        rm -f /tmp/frp_${FRP_VERSION}_linux_amd64.tar.gz
+        rm -f /tmp/frp_${}_linux_amd64.tar.gz
     fi
 
     # 获取服务器基本配置
