@@ -640,12 +640,12 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-# 运行主函数
-mainsleep 1
-                ;;
-        esac
-    done
-}
+# 检查是否以 root 权限运行
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}错误: 此脚本需要 root 权限运行。${NC}"
+    echo -e "请使用 sudo 重新运行此脚本。"
+    exit 1
+fi
 
 # 主函数
 main() {
