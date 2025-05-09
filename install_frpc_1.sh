@@ -640,8 +640,6 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-# 运行主函数
-main
 
 # 主函数
 main() {
