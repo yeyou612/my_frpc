@@ -642,6 +642,7 @@ fi
 
 
 # 主函数
+# 主函数
 main() {
     while true; do
         show_menu
@@ -672,3 +673,11 @@ main() {
                 ;;
             *)
                 echo -e "${RED}无效选项，请重新选择。${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# 在函数定义之后调用 main 函数
+main
