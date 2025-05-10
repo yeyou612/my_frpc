@@ -1,4 +1,65 @@
-#!/bin/bash
+# 添加新的端口穿透
+add_tunnel() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        return
+    fi
+    
+    read -p "请输入通道类型 (例如 ssh, web, rdp): " TUNNEL_TYPE
+    read -p "请输入本地端口: " LOCAL_PORT
+    
+    # 检查是否配置了服务端管理系统
+    USE_SERVER_MANAGER=0
+    if grep -q "login_fail_exit = false" "$CONFIG_FILE"; then
+        echo -e "${YELLOW}检测到已启用服务端管理系统集成${NC}"
+        USE_SERVER_MANAGER=1
+    fi
+    
+    # 生成随机隧道名称
+    TUNNEL_NAME=$(generate_random_name "$TUNNEL_TYPE")
+    
+    if [ "$USE_SERVER_MANAGER" = "1" ]; then
+        # 自动分配远程端口的配置
+        cat >> $CONFIG_FILE <<EOF
+
+[${TUNNEL_NAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${LOCAL_PORT}
+# 启用自动端口分配，服务端动态分配端口
+remote_port = 0
+EOF
+        echo -e "${GREEN}✅ 已添加新的网络通道: ${TUNNEL_NAME}${NC}"
+        echo -e "${YELLOW}远程端口将由服务端自动分配，启动服务后可通过API查询${NC}"
+        
+        # 向服务端注册隧道
+        register_tunnel_to_server "$TUNNEL_NAME" "$TUNNEL_TYPE" "$LOCAL_PORT" "0"
+    else
+        # 手动指定远程端口
+        read -p "请输入远程端口: " REMOTE_PORT
+        
+        # 添加到配置文件
+        cat >> $CONFIG_FILE <<EOF
+
+[${TUNNEL_NAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${LOCAL_PORT}
+remote_port = ${REMOTE_PORT}
+EOF
+
+        echo -e "${GREEN}✅ 已添加新的网络通道: ${TUNNEL_NAME}${NC}"
+        
+        # 向服务端注册隧道
+        register_tunnel_to_server "$TUNNEL_NAME" "$TUNNEL_TYPE" "$LOCAL_PORT" "$REMOTE_PORT"
+    fi
+    
+    # 如果网络工具已安装并运行，则重启服务
+    if systemctl is-active --quiet $SERVICE_NAME; then
+        systemctl restart $SERVICE_NAME
+        echo -e "${GREEN}✅ 网络监控服务已重启${NC}"
+    fi
+}#!/bin/bash
 
 # FRP 客户端安装/卸载/管理脚本 (隐蔽版)
 # 支持自动向服务端注册隧道
@@ -111,7 +172,7 @@ register_tunnel_to_server() {
     server_addr=$(grep "server_addr" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
     token=$(grep "token" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
     
-    # 服务端API地址
+    # 服务端API地址 - 使用服务端管理系统的API端口7501
     api_url="http://${server_addr}:7501/api/register"
     
     # 获取主机名和本地IP
@@ -136,6 +197,20 @@ register_tunnel_to_server() {
     
     # 解析响应
     if echo "$response" | grep -q "\"success\":true"; then
+        # 检查是否有返回的公网IP
+        public_ip=$(echo "$response" | grep -o '"public_ip":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+        if [ -n "$public_ip" ]; then
+            echo -e "${GREEN}✅ 服务端公网IP: ${public_ip}${NC}"
+        fi
+        
+        # 如果是自动分配端口，尝试从响应中获取分配的端口
+        if [ "$remote_port" = "0" ]; then
+            assigned_port=$(echo "$response" | grep -o '"remote_port":[0-9]*' | cut -d':' -f2)
+            if [ -n "$assigned_port" ] && [ "$assigned_port" != "0" ]; then
+                echo -e "${GREEN}✅ 服务端自动分配端口: ${assigned_port}${NC}"
+            fi
+        fi
+        
         echo -e "${GREEN}✅ 已成功向服务端注册通道${NC}"
         return 0
     else
@@ -338,12 +413,12 @@ install_frpc() {
     read -p "请输入认证令牌 [默认mysecret123]: " TOKEN
     TOKEN=${TOKEN:-mysecret123}
     
-    # 询问用户是否使用自动端口分配
-    echo -e "${YELLOW}远程端口配置方式:${NC}"
-    echo -e "1. 自动从服务端获取远程端口 (推荐)"
-    echo -e "2. 手动指定远程端口"
-    read -p "请选择远程端口配置方式 [1/2] (默认:1): " PORT_CONFIG_METHOD
-    PORT_CONFIG_METHOD=${PORT_CONFIG_METHOD:-1}
+    # 询问用户是否使用服务端管理系统
+    echo -e "${YELLOW}是否使用服务端管理系统?${NC}"
+    echo -e "1. 是 - 使用服务端管理系统自动分配端口 (推荐)"
+    echo -e "2. 否 - 仅使用基本FRP功能，手动管理端口"
+    read -p "请选择 [1/2] (默认:1): " USE_SERVER_MANAGER
+    USE_SERVER_MANAGER=${USE_SERVER_MANAGER:-1}
     
     # 创建基本配置文件
     cat > $CONFIG_FILE <<EOF
@@ -351,18 +426,19 @@ install_frpc() {
 server_addr = ${VPS_IP}
 server_port = ${SERVER_PORT}
 token = ${TOKEN}
+EOF
+
+    # 如果使用服务端管理系统，增加额外配置
+    if [ "$USE_SERVER_MANAGER" = "1" ]; then
+        cat >> $CONFIG_FILE <<EOF
 admin_addr = 127.0.0.1
 admin_port = 7400
 admin_user = admin
 admin_pwd = admin
-EOF
-
-    # 如果选择自动端口，加入相应配置
-    if [ "$PORT_CONFIG_METHOD" = "1" ]; then
-        cat >> $CONFIG_FILE <<EOF
 # 自动使用服务端的端口分配策略
 login_fail_exit = false
 EOF
+        echo -e "${GREEN}✓ 已启用服务端管理系统集成${NC}"
     fi
     
     # 配置 SOCKS5 穿透（推荐用于远程访问）
@@ -374,8 +450,8 @@ EOF
         # 生成随机名称
         SOCKS_TUNNEL_NAME=$(generate_random_name "socks5")
         
-        if [ "$PORT_CONFIG_METHOD" = "1" ]; then
-            # 自动分配远程端口的配置
+        if [ "$USE_SERVER_MANAGER" = "1" ]; then
+            # 使用服务端管理系统自动分配端口
             cat >> $CONFIG_FILE <<EOF
 
 [${SOCKS_TUNNEL_NAME}]
@@ -386,6 +462,9 @@ local_port = ${SOCKS_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ SOCKS5通道已配置，远程端口将由服务端自动分配${NC}"
+            
+            # 向服务端注册
+            register_tunnel_to_server "$SOCKS_TUNNEL_NAME" "socks5" "$SOCKS_LOCAL_PORT" "0"
         else
             # 手动指定远程端口
             read -p "请输入 SOCKS5 远程端口 [建议用6000以上端口]: " SOCKS_REMOTE_PORT
@@ -398,14 +477,6 @@ local_port = ${SOCKS_LOCAL_PORT}
 remote_port = ${SOCKS_REMOTE_PORT}
 EOF
         fi
-
-        # 向服务端注册
-        if [ "$PORT_CONFIG_METHOD" = "2" ]; then
-            register_tunnel_to_server "$SOCKS_TUNNEL_NAME" "socks5" "$SOCKS_LOCAL_PORT" "$SOCKS_REMOTE_PORT"
-        else
-            # 使用0表示自动分配的端口
-            register_tunnel_to_server "$SOCKS_TUNNEL_NAME" "socks5" "$SOCKS_LOCAL_PORT" "0"
-        fi
     fi
     
     # 配置 SSH 穿透
@@ -417,8 +488,8 @@ EOF
         # 生成随机名称
         SSH_TUNNEL_NAME=$(generate_random_name "ssh")
         
-        if [ "$PORT_CONFIG_METHOD" = "1" ]; then
-            # 自动分配远程端口的配置
+        if [ "$USE_SERVER_MANAGER" = "1" ]; then
+            # 使用服务端管理系统自动分配端口
             cat >> $CONFIG_FILE <<EOF
 
 [${SSH_TUNNEL_NAME}]
@@ -429,6 +500,9 @@ local_port = ${SSH_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ SSH通道已配置，远程端口将由服务端自动分配${NC}"
+            
+            # 向服务端注册
+            register_tunnel_to_server "$SSH_TUNNEL_NAME" "ssh" "$SSH_LOCAL_PORT" "0"
         else
             # 手动指定远程端口
             read -p "请输入 SSH 远程端口: " SSH_REMOTE_PORT
@@ -441,14 +515,6 @@ local_port = ${SSH_LOCAL_PORT}
 remote_port = ${SSH_REMOTE_PORT}
 EOF
         fi
-
-        # 向服务端注册
-        if [ "$PORT_CONFIG_METHOD" = "2" ]; then
-            register_tunnel_to_server "$SSH_TUNNEL_NAME" "ssh" "$SSH_LOCAL_PORT" "$SSH_REMOTE_PORT"
-        else
-            # 使用0表示自动分配的端口
-            register_tunnel_to_server "$SSH_TUNNEL_NAME" "ssh" "$SSH_LOCAL_PORT" "0"
-        fi
     fi
     
     # 配置 Web 穿透
@@ -460,8 +526,8 @@ EOF
         # 生成随机名称
         WEB_TUNNEL_NAME=$(generate_random_name "web")
         
-        if [ "$PORT_CONFIG_METHOD" = "1" ]; then
-            # 自动分配远程端口的配置
+        if [ "$USE_SERVER_MANAGER" = "1" ]; then
+            # 使用服务端管理系统自动分配端口
             cat >> $CONFIG_FILE <<EOF
 
 [${WEB_TUNNEL_NAME}]
@@ -472,6 +538,9 @@ local_port = ${WEB_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ Web通道已配置，远程端口将由服务端自动分配${NC}"
+            
+            # 向服务端注册
+            register_tunnel_to_server "$WEB_TUNNEL_NAME" "web" "$WEB_LOCAL_PORT" "0"
         else
             # 手动指定远程端口
             read -p "请输入 Web 远程端口: " WEB_REMOTE_PORT
@@ -483,14 +552,6 @@ local_ip = 127.0.0.1
 local_port = ${WEB_LOCAL_PORT}
 remote_port = ${WEB_REMOTE_PORT}
 EOF
-        fi
-
-        # 向服务端注册
-        if [ "$PORT_CONFIG_METHOD" = "2" ]; then
-            register_tunnel_to_server "$WEB_TUNNEL_NAME" "web" "$WEB_LOCAL_PORT" "$WEB_REMOTE_PORT"
-        else
-            # 使用0表示自动分配的端口
-            register_tunnel_to_server "$WEB_TUNNEL_NAME" "web" "$WEB_LOCAL_PORT" "0"
         fi
     fi
     
@@ -680,33 +741,78 @@ show_usage() {
     if [ -f "$CONFIG_FILE" ]; then
         SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
         
-        while IFS= read -r line; do
-            if [[ $line == \[*] && $line != "[common]" ]]; then
-                section_name=$(echo "$line" | tr -d '[]')
+        # 检查配置模式
+        USE_SERVER_MANAGER=0
+        if grep -q "login_fail_exit = false" "$CONFIG_FILE"; then
+            USE_SERVER_MANAGER=1
+        fi
+        
+        if [ "$USE_SERVER_MANAGER" = "1" ] && systemctl is-active --quiet $SERVICE_NAME; then
+            # 尝试从API获取实际端口
+            echo -e "${BLUE}尝试从API获取SOCKS5端口信息...${NC}"
+            
+            ADMIN_PORT=$(grep "admin_port" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            ADMIN_USER=$(grep "admin_user" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            ADMIN_PWD=$(grep "admin_pwd" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            
+            API_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT:-7400}/api/status" -u "${ADMIN_USER:-admin}:${ADMIN_PWD:-admin}" 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$API_INFO" ]; then
+                # 查找 SOCKS5 相关隧道
+                socks_remote_port=$(echo "$API_INFO" | grep -o '"name":"[^"]*socks[^"]*","type":"[^"]*","status":"[^"]*","local_addr":"[^"]*","plugin":"[^"]*","remote_addr":"[^"]*"' | head -1 | 
+                                   grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
                 
-                # 读取后续几行以检查是否是SOCKS5穿透
-                next_lines=$(grep -A 4 "$line" "$CONFIG_FILE")
-                
-                if echo "$next_lines" | grep -q "local_port"; then
-                    local_port=$(echo "$next_lines" | grep "local_port" | cut -d'=' -f2 | tr -d ' ')
+                if [ -n "$socks_remote_port" ]; then
+                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                    echo -e "   - 代理端口: ${socks_remote_port}"
+                    echo -e "   ${GREEN}✓ 从API获取的实际端口信息${NC}"
+                else
+                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                    echo -e "   - 代理端口: ${YELLOW}未找到SOCKS5代理端口信息${NC}"
+                fi
+            else
+                echo -e "${YELLOW}无法从API获取端口信息，请手动查询${NC}"
+                echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                echo -e "   - 代理端口: 请使用命令查看 'curl http://127.0.0.1:7400/api/status -u admin:admin'"
+            fi
+        else
+            # 从配置文件直接获取
+            while IFS= read -r line; do
+                if [[ $line == \[*] && $line != "[common]" ]]; then
+                    section_name=$(echo "$line" | tr -d '[]')
                     
-                    if echo "$next_lines" | grep -q "remote_port"; then
-                        remote_port=$(echo "$next_lines" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+                    # 读取后续几行以检查是否是SOCKS5穿透
+                    next_lines=$(grep -A 4 "$line" "$CONFIG_FILE")
+                    
+                    if echo "$next_lines" | grep -q "local_port"; then
+                        local_port=$(echo "$next_lines" | grep "local_port" | cut -d'=' -f2 | tr -d ' ')
                         
-                        # 如果名称包含socks，或者本地端口是典型的socks端口(1080, 10808等)
-                        if [[ $section_name == *"socks"* || $local_port == "1080" || $local_port == "10808" || $local_port == "10809" || $local_port == "10810" || $local_port == "10811" ]]; then
-                            SOCKS_INFO="${SERVER_ADDR}:${remote_port}"
-                            break
+                        if echo "$next_lines" | grep -q "remote_port"; then
+                            remote_port=$(echo "$next_lines" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+                            
+                            # 如果名称包含socks，或者本地端口是典型的socks端口(1080, 10808等)
+                            if [[ $section_name == *"socks"* || $local_port == "1080" || $local_port == "10808" || $local_port == "10809" || $local_port == "10810" || $local_port == "10811" ]]; then
+                                if [ "$remote_port" = "0" ]; then
+                                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                                    echo -e "   - 代理端口: ${YELLOW}自动分配 - 请查询API获取实际端口${NC}"
+                                    echo -e "   - 查询命令: curl http://127.0.0.1:7400/api/status -u admin:admin"
+                                else
+                                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                                    echo -e "   - 代理端口: ${remote_port}"
+                                fi
+                                SOCKS_INFO="found"
+                                break
+                            fi
                         fi
                     fi
                 fi
+            done < "$CONFIG_FILE"
+            
+            if [ -z "$SOCKS_INFO" ]; then
+                echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                echo -e "   - 代理端口: ${YELLOW}未配置SOCKS5代理${NC}"
             fi
-        done < "$CONFIG_FILE"
-    fi
-    
-    if [ -n "$SOCKS_INFO" ]; then
-        echo -e "   - 代理服务器: ${SERVER_ADDR}"
-        echo -e "   - 代理端口: ${remote_port}"
+        fi
     else
         echo -e "   - 代理服务器: 您的服务器 IP/域名"
         echo -e "   - 代理端口: 您配置的 SOCKS5 远程端口"
@@ -734,33 +840,79 @@ show_usage() {
     if [ -f "$CONFIG_FILE" ]; then
         SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
         
-        while IFS= read -r line; do
-            if [[ $line == \[*] && $line != "[common]" ]]; then
-                section_name=$(echo "$line" | tr -d '[]')
+        # 检查配置模式
+        USE_SERVER_MANAGER=0
+        if grep -q "login_fail_exit = false" "$CONFIG_FILE"; then
+            USE_SERVER_MANAGER=1
+        fi
+        
+        if [ "$USE_SERVER_MANAGER" = "1" ] && systemctl is-active --quiet $SERVICE_NAME; then
+            # 尝试从API获取实际端口
+            ADMIN_PORT=$(grep "admin_port" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            ADMIN_USER=$(grep "admin_user" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            ADMIN_PWD=$(grep "admin_pwd" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+            
+            API_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT:-7400}/api/status" -u "${ADMIN_USER:-admin}:${ADMIN_PWD:-admin}" 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$API_INFO" ]; then
+                # 查找SSH相关隧道
+                ssh_remote_port=$(echo "$API_INFO" | grep -o '"name":"[^"]*ssh[^"]*","type":"[^"]*","status":"[^"]*","local_addr":"[^"]*","plugin":"[^"]*","remote_addr":"[^"]*"' | head -1 | 
+                                   grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
                 
-                # 读取后续几行以检查是否是SSH穿透
-                next_lines=$(grep -A 4 "$line" "$CONFIG_FILE")
-                
-                if echo "$next_lines" | grep -q "local_port"; then
-                    local_port=$(echo "$next_lines" | grep "local_port" | cut -d'=' -f2 | tr -d ' ')
+                if [ -n "$ssh_remote_port" ]; then
+                    echo -e "使用以下命令连接到您的公司电脑:"
+                    echo -e "  ssh -p ${ssh_remote_port} 用户名@${SERVER_ADDR}"
+                    echo -e "  ${GREEN}✓ 从API获取的实际SSH端口信息${NC}"
+                else
+                    echo -e "无法从API找到SSH通道信息"
+                    echo -e "请使用以下命令查看详细信息:"
+                    echo -e "  curl http://127.0.0.1:7400/api/status -u admin:admin"
+                fi
+            else
+                echo -e "${YELLOW}无法从API获取端口信息，请手动查询${NC}"
+                echo -e "如果您配置了 SSH 通道:"
+                echo -e "  1. 获取实际远程端口: curl http://127.0.0.1:7400/api/status -u admin:admin"
+                echo -e "  2. 使用命令: ssh -p <远程端口> 用户名@${SERVER_ADDR}"
+            fi
+        else
+            # 从配置文件直接获取
+            while IFS= read -r line; do
+                if [[ $line == \[*] && $line != "[common]" ]]; then
+                    section_name=$(echo "$line" | tr -d '[]')
                     
-                    if echo "$next_lines" | grep -q "remote_port"; then
-                        remote_port=$(echo "$next_lines" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+                    # 读取后续几行以检查是否是SSH穿透
+                    next_lines=$(grep -A 4 "$line" "$CONFIG_FILE")
+                    
+                    if echo "$next_lines" | grep -q "local_port"; then
+                        local_port=$(echo "$next_lines" | grep "local_port" | cut -d'=' -f2 | tr -d ' ')
                         
-                        # 如果名称包含ssh，或者本地端口是ssh端口(22)
-                        if [[ $section_name == *"ssh"* || $local_port == "22" ]]; then
-                            SSH_INFO="${SERVER_ADDR}:${remote_port}"
-                            break
+                        if echo "$next_lines" | grep -q "remote_port"; then
+                            remote_port=$(echo "$next_lines" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+                            
+                            # 如果名称包含ssh，或者本地端口是ssh端口(22)
+                            if [[ $section_name == *"ssh"* || $local_port == "22" ]]; then
+                                if [ "$remote_port" = "0" ]; then
+                                    echo -e "SSH通道配置了自动端口分配"
+                                    echo -e "请查询API获取实际端口然后使用以下命令连接:"
+                                    echo -e "  1. 获取端口: curl http://127.0.0.1:7400/api/status -u admin:admin"
+                                    echo -e "  2. 连接: ssh -p <查询到的端口> 用户名@${SERVER_ADDR}"
+                                else
+                                    echo -e "使用以下命令连接到您的公司电脑:"
+                                    echo -e "  ssh -p ${remote_port} 用户名@${SERVER_ADDR}"
+                                fi
+                                SSH_INFO="found"
+                                break
+                            fi
                         fi
                     fi
                 fi
+            done < "$CONFIG_FILE"
+            
+            if [ -z "$SSH_INFO" ]; then
+                echo -e "未配置SSH通道"
+                echo -e "如需配置，请运行本工具并选择添加SSH通道"
             fi
-        done < "$CONFIG_FILE"
-    fi
-    
-    if [ -n "$SSH_INFO" ]; then
-        echo -e "使用以下命令连接到您的公司电脑:"
-        echo -e "  ssh -p ${remote_port} 用户名@${SERVER_ADDR}"
+        fi
     else
         echo -e "如果您配置了 SSH 通道，使用以下命令连接到您的公司电脑:"
         echo -e "  ssh -p <SSH远程端口> 用户名@<您的服务器IP>"
