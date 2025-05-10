@@ -35,6 +35,8 @@ configure_firewall() {
 
   if command -v ufw &>/dev/null; then
     echo "🛡️ 使用 ufw 配置防火墙..."
+    ufw allow 7000/tcp
+    ufw allow 7500/tcp
     ufw allow 10000:40000/tcp comment 'FRP Ports'
     ufw reload || true
     ufw enable || true
