@@ -31,41 +31,32 @@ show_menu() {
 }
 
 configure_firewall() {
-  # 检查是否安装了ufw
+  echo "📝 正在配置防火墙规则（开放 10000-40000）..."
+
   if command -v ufw &>/dev/null; then
-    echo "📝 配置 ufw 防火墙规则..."
-    ufw allow 7000 || true
-    ufw allow 7500 || true
-    ufw allow 6000 || true
-    ufw allow 6001 || true
-    ufw allow 6002 || true
+    echo "🛡️ 使用 ufw 配置防火墙..."
+    ufw allow 10000:40000/tcp comment 'FRP Ports'
+    ufw reload || true
     ufw enable || true
-  # 检查是否安装了iptables
   elif command -v iptables &>/dev/null; then
-    echo "📝 配置 iptables 防火墙规则..."
-    iptables -A INPUT -p tcp --dport 7000 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 7500 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 6000 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 6001 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 6002 -j ACCEPT
-    
-    # 尝试保存iptables规则（不同发行版可能有不同方法）
+    echo "🛡️ 使用 iptables 配置防火墙..."
+    iptables -A INPUT -p tcp --dport 10000:40000 -j ACCEPT
+
+    # 保存规则
     if command -v iptables-save &>/dev/null; then
       if [ -d "/etc/iptables" ]; then
         iptables-save > /etc/iptables/rules.v4
       elif [ -d "/etc/sysconfig" ]; then
         iptables-save > /etc/sysconfig/iptables
       else
-        echo "⚠️ 无法确定保存iptables规则的位置，请手动保存防火墙规则"
+        echo "⚠️ 无法确定保存iptables规则的位置，请手动保存"
       fi
-    else
-      echo "⚠️ 无法保存iptables规则，请手动保存防火墙规则"
     fi
   else
-    echo "⚠️ 未检测到防火墙工具（ufw/iptables），请手动配置防火墙规则："
-    echo "- 请确保开放以下端口：7000, 7500, 6000, 6001, 6002"
+    echo "⚠️ 未检测到防火墙工具（ufw 或 iptables），请手动开放端口范围 10000-40000"
   fi
 }
+
 
 install_frps() {
   if check_installed; then
