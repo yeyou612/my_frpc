@@ -100,7 +100,7 @@ dashboard_user = ${DASH_USER}
 dashboard_pwd = ${DASH_PWD}
 dashboard_token = ${DASH_TOKEN}
 log_level = info
-log_file = /var/log/frps.log
+log_file = /usr/local/frp/frps.log
 authentication_method = token
 token = ${DASH_TOKEN}
 EOF
