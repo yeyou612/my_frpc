@@ -310,29 +310,7 @@ list_tunnels() {
     fi
     
     return 0
-} -e "${YELLOW}--------------------------------${NC}"
-            fi
-        fi
-    done < "$CONFIG_FILE"
-    
-    if [ $section_count -eq 0 ]; then
-        echo -e "${RED}没有配置任何网络通道。${NC}"
-        return 1
-    fi
-    
-    return 0
-} -e "${YELLOW}--------------------------------${NC}"
-            fi
-        fi
-    done < "$CONFIG_FILE"
-    
-    if [ $section_count -eq 0 ]; then
-        echo -e "${RED}没有配置任何网络通道。${NC}"
-        return 1
-    fi
-    
-    return 0
-}
+    }
 
 download_with_proxy() {
     echo -e "${BLUE}正在下载工具组件 v${FRP_VERSION}...${NC}"
