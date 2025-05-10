@@ -13,4 +13,5 @@ sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main
 
 sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc_1.sh)"
 
-sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc_1.sh)"
+sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/network-tool.sh)"
+
