@@ -21,6 +21,14 @@ INSTALL_DIR=/usr/share/lib/.network-util         # 安装目录
 SERVICE_NAME=network-monitor                      # 服务名称
 SERVICE_FILE=/etc/systemd/system/${SERVICE_NAME}.service
 CONFIG_FILE=$INSTALL_DIR/network-cfg.dat         # 配置文件名
+LOG_FILE=$INSTALL_DIR/client.log                 # 添加日志文件
+
+# 记录日志的函数
+log() {
+    local level=$1
+    local message=$2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
 
 # 获取本机公网 IP
 get_local_ip() {
@@ -101,6 +109,13 @@ generate_random_name() {
     echo "${prefix}_${random_str}"
 }
 
+# 生成稳定的隧道名称
+generate_stable_name() {
+    prefix=$1
+    hostname=$(hostname)
+    echo "${prefix}_${hostname}"
+}
+
 # 向服务端注册隧道
 register_tunnel_to_server() {
     # 获取参数
@@ -130,6 +145,9 @@ register_tunnel_to_server() {
     echo -e "${YELLOW}本地端口: ${local_port}${NC}"
     echo -e "${YELLOW}远程端口: ${remote_port}${NC}"
     
+    # 记录日志
+    log "INFO" "正在向服务端注册通道: $tunnel_name (类型: $tunnel_type, 本地端口: $local_port)"
+    
     # 使用curl发送注册请求
     echo -e "${YELLOW}发送API请求...${NC}"
     response=$(curl -s -X POST \
@@ -147,12 +165,16 @@ register_tunnel_to_server() {
     
     echo -e "${YELLOW}API响应: ${response}${NC}"
     
+    # 记录API响应到日志
+    log "INFO" "API响应: $response"
+    
     # 解析响应
     if echo "$response" | grep -q "\"success\":true"; then
         # 检查是否有返回的公网IP
         public_ip=$(echo "$response" | grep -o '"public_ip":"[^"]*"' | cut -d':' -f2 | tr -d '"')
         if [ -n "$public_ip" ]; then
             echo -e "${GREEN}✅ 服务端公网IP: ${public_ip}${NC}"
+            log "INFO" "服务端公网IP: $public_ip"
         fi
         
         # 如果是自动分配端口，尝试从响应中获取分配的端口
@@ -160,14 +182,17 @@ register_tunnel_to_server() {
             assigned_port=$(echo "$response" | grep -o '"remote_port":[0-9]*' | cut -d':' -f2)
             if [ -n "$assigned_port" ] && [ "$assigned_port" != "0" ]; then
                 echo -e "${GREEN}✅ 服务端自动分配端口: ${assigned_port}${NC}"
+                log "INFO" "服务端自动分配端口: $assigned_port"
             fi
         fi
         
         echo -e "${GREEN}✅ 已成功向服务端注册通道${NC}"
+        log "INFO" "已成功向服务端注册通道: $tunnel_name"
         return 0
     else
         error=$(echo "$response" | grep -o '"error":"[^"]*"' | cut -d':' -f2- | tr -d '"')
         echo -e "${RED}❌ 向服务端注册通道失败: ${error:-未知错误}${NC}"
+        log "ERROR" "向服务端注册通道失败: ${error:-未知错误}"
         return 1
     fi
 }
@@ -176,6 +201,7 @@ register_tunnel_to_server() {
 list_tunnels() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        log "ERROR" "尝试查看通道配置失败: 配置文件不存在"
         return 1
     fi
 
@@ -189,6 +215,15 @@ list_tunnels() {
     echo -e "${GREEN}服务器:${NC} $SERVER_ADDR:$SERVER_PORT"
     echo -e "${YELLOW}================================${NC}"
     
+    # 检查是否安装了jq
+    if ! command -v jq &> /dev/null; then
+        echo -e "${YELLOW}未安装jq工具，正在尝试安装...${NC}"
+        apt update -qq && apt install -y jq || {
+            echo -e "${YELLOW}jq安装失败，将使用基本解析方式${NC}"
+            log "WARN" "jq安装失败，使用基本解析方式"
+        }
+    fi
+    
     # 检查是否启用了admin端口
     if grep -q "admin_port" "$CONFIG_FILE"; then
         ADMIN_PORT=$(grep "admin_port" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
@@ -198,31 +233,70 @@ list_tunnels() {
         # 尝试获取运行时信息
         if systemctl is-active --quiet $SERVICE_NAME; then
             echo -e "${BLUE}尝试从API获取实时端口信息...${NC}"
+            log "INFO" "尝试从API获取实时端口信息"
             TUNNEL_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT}/api/status" -u "${ADMIN_USER}:${ADMIN_PWD}" 2>/dev/null)
             
             if [ $? -eq 0 ] && [ -n "$TUNNEL_INFO" ]; then
                 echo -e "${GREEN}获取到实时通道信息:${NC}"
-                # 使用grep和awk解析JSON (这是一个简单实现，实际环境可能需要更健壮的方式)
-                echo "$TUNNEL_INFO" | grep -o '"name":"[^"]*","type":"[^"]*","status":"[^"]*","local_addr":"[^"]*","plugin":"[^"]*","remote_addr":"[^"]*"' | 
-                while read -r line; do
-                    name=$(echo "$line" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
-                    status=$(echo "$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-                    local_addr=$(echo "$line" | grep -o '"local_addr":"[^"]*"' | cut -d'"' -f4)
-                    remote_addr=$(echo "$line" | grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4)
+                
+                # 使用jq解析JSON数据（如果可用）
+                if command -v jq &> /dev/null; then
+                    # 首先保存原始JSON供调试
+                    echo "$TUNNEL_INFO" > "/tmp/frpc_api_response.json"
+                    log "INFO" "已保存API响应到: /tmp/frpc_api_response.json"
                     
-                    echo -e "${GREEN}$name${NC}"
-                    echo -e "  状态: ${status}"
-                    echo -e "  本地地址: ${local_addr}"
-                    echo -e "  远程地址: ${remote_addr}"
-                    echo -e "${YELLOW}--------------------------------${NC}"
-                done
+                    # 检查JSON结构
+                    proxy_count=$(echo "$TUNNEL_INFO" | jq '.proxies | length // 0')
+                    
+                    if [ "$proxy_count" -gt 0 ]; then
+                        # 使用jq提取并格式化通道信息
+                        echo "$TUNNEL_INFO" | jq -r '.proxies[] | "\(.name // .proxy_name)|\(.status // "unknown")|\(.local_addr // "unknown")|\(.remote_addr // "unknown")"' | 
+                        while IFS="|" read -r name status local_addr remote_addr; do
+                            if [ -n "$name" ]; then
+                                echo -e "${GREEN}$name${NC}"
+                                echo -e "  状态: ${status}"
+                                echo -e "  本地地址: ${local_addr}"
+                                echo -e "  远程地址: ${remote_addr}"
+                                echo -e "${YELLOW}--------------------------------${NC}"
+                            fi
+                        done
+                    else
+                        echo -e "${YELLOW}未找到任何活跃的通道${NC}"
+                        log "WARN" "API响应中未找到活跃的通道"
+                    fi
+                else
+                    # 如果jq不可用，使用grep和awk解析
+                    # 尝试适配不同版本的frpc API响应格式
+                    if echo "$TUNNEL_INFO" | grep -q "proxies"; then
+                        echo -e "${YELLOW}使用基本解析方式...${NC}"
+                        # 适配新版格式
+                        echo "$TUNNEL_INFO" | grep -o '"\(name\|proxy_name\)":"[^"]*".*"remote_addr":"[^"]*"' | 
+                        while read -r line; do
+                            name=$(echo "$line" | grep -o '"\(name\|proxy_name\)":"[^"]*"' | cut -d'"' -f4)
+                            status=$(echo "$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+                            local_addr=$(echo "$line" | grep -o '"local_addr":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+                            remote_addr=$(echo "$line" | grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+                            
+                            echo -e "${GREEN}$name${NC}"
+                            echo -e "  状态: ${status}"
+                            echo -e "  本地地址: ${local_addr}"
+                            echo -e "  远程地址: ${remote_addr}"
+                            echo -e "${YELLOW}--------------------------------${NC}"
+                        done
+                    else
+                        echo -e "${RED}无法解析API响应，原始数据已保存到/tmp/frpc_api_response.txt${NC}"
+                        echo "$TUNNEL_INFO" > "/tmp/frpc_api_response.txt"
+                        log "ERROR" "无法解析API响应，原始数据已保存到/tmp/frpc_api_response.txt"
+                    fi
+                fi
+                
                 return 0
             else
                 echo -e "${YELLOW}无法获取实时信息，显示配置信息...${NC}"
+                log "WARN" "无法从API获取实时信息，将显示配置文件信息"
             fi
         fi
     fi
-    
     # 如果无法获取实时信息，则显示配置文件中的信息
     # 跳过 [common] 部分
     skip_common=true
@@ -258,6 +332,7 @@ list_tunnels() {
     
     if [ $section_count -eq 0 ]; then
         echo -e "${RED}没有配置任何网络通道。${NC}"
+        log "WARN" "配置文件中没有配置任何网络通道"
         return 1
     fi
     
@@ -274,14 +349,18 @@ download_with_proxy() {
         read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
         
         echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
+        log "INFO" "使用代理下载: $proxy_address"
         curl -L -o frp_${FRP_VERSION}_linux_amd64.tar.gz --proxy http://${proxy_address} "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz" || {
             echo -e "${RED}代理下载失败，请检查代理设置或尝试直接下载。${NC}"
+            log "ERROR" "代理下载失败"
             return 1
         }
     else
         echo -e "${YELLOW}尝试直接下载...${NC}"
+        log "INFO" "尝试直接下载FRP客户端"
         curl -L -o frp_${FRP_VERSION}_linux_amd64.tar.gz "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_amd64.tar.gz" || {
             echo -e "${RED}直接下载失败，建议使用代理。${NC}"
+            log "ERROR" "直接下载失败"
             return 1
         }
     fi
@@ -289,14 +368,19 @@ download_with_proxy() {
     # 检查文件是否成功下载和有效
     if [ ! -f "frp_${FRP_VERSION}_linux_amd64.tar.gz" ] || [ ! -s "frp_${FRP_VERSION}_linux_amd64.tar.gz" ]; then
         echo -e "${RED}下载的文件不存在或为空！${NC}"
+        log "ERROR" "下载的文件不存在或为空"
         return 1
     fi
     
+    log "INFO" "成功下载FRP客户端v${FRP_VERSION}"
     return 0
 }
 
 # 安装网络工具
 install_frpc() {
+    # 确保日志目录存在
+    mkdir -p $(dirname "$LOG_FILE")
+    
     # 如果已安装，询问是否重新安装
     if [ -f "$SERVICE_FILE" ]; then
         read -p "网络工具已安装，是否重新配置？(y/n): " confirm
@@ -304,27 +388,39 @@ install_frpc() {
             echo "取消配置操作。"
             return
         fi
+        
+        # 备份原配置
+        if [ -f "$CONFIG_FILE" ]; then
+            backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+            cp "$CONFIG_FILE" "$backup_file"
+            echo -e "${BLUE}已备份原配置到: ${backup_file}${NC}"
+            log "INFO" "已备份原配置到: ${backup_file}"
+        fi
     fi
 
     # 创建安装目录
     mkdir -p $INSTALL_DIR
+    log "INFO" "创建安装目录: $INSTALL_DIR"
     
     # 如果是新安装，则下载并安装
     if [ ! -f "$INSTALL_DIR/frpc" ]; then
         # 使用下载函数下载
         if ! download_with_proxy; then
             echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
+            log "ERROR" "下载FRP客户端失败"
             return 1
         fi
         
         echo -e "${BLUE}正在安装网络工具...${NC}"
         tar -zxf frp_${FRP_VERSION}_linux_amd64.tar.gz || {
             echo -e "${RED}解压失败，可能下载的文件不完整或已损坏。${NC}"
+            log "ERROR" "解压FRP客户端失败"
             return 1
         }
         
         cp frp_${FRP_VERSION}_linux_amd64/frpc $INSTALL_DIR/ || {
             echo -e "${RED}复制文件失败。${NC}"
+            log "ERROR" "复制FRP客户端文件失败"
             return 1
         }
         
@@ -334,6 +430,8 @@ install_frpc() {
         # 清理临时文件
         rm -f frp_${FRP_VERSION}_linux_amd64.tar.gz
         rm -rf frp_${FRP_VERSION}_linux_amd64
+        
+        log "INFO" "成功安装FRP客户端到: $INSTALL_DIR/frpc"
     fi
 
     # 获取服务器基本配置
@@ -342,6 +440,8 @@ install_frpc() {
     SERVER_PORT=${SERVER_PORT:-7000}
     read -p "请输入认证令牌 [默认mysecret123]: " TOKEN
     TOKEN=${TOKEN:-mysecret123}
+    
+    log "INFO" "配置服务器: $VPS_IP:$SERVER_PORT"
     
     # 询问用户是否使用服务端管理系统
     echo -e "${YELLOW}是否使用服务端管理系统?${NC}"
@@ -367,6 +467,8 @@ install_frpc() {
         PORT_RANGE="${PORT_RANGE_MIN}-${PORT_RANGE_MAX}"
     fi
     
+    log "INFO" "端口范围设置为: $PORT_RANGE"
+    
     # 创建基本配置文件
     cat > $CONFIG_FILE <<EOF
 [common]
@@ -387,6 +489,7 @@ admin_pwd = admin
 login_fail_exit = false
 EOF
         echo -e "${GREEN}✓ 已启用服务端管理系统集成${NC}"
+        log "INFO" "已启用服务端管理系统集成"
     fi
     
     # 配置 SOCKS5 穿透（推荐用于远程访问）
@@ -395,8 +498,8 @@ EOF
         read -p "请输入 SOCKS5 本地端口 [默认10811]: " SOCKS_LOCAL_PORT
         SOCKS_LOCAL_PORT=${SOCKS_LOCAL_PORT:-10811}
         
-        # 生成随机名称
-        SOCKS_TUNNEL_NAME=$(generate_random_name "socks5")
+        # 使用稳定命名而非随机命名
+        SOCKS_TUNNEL_NAME=$(generate_stable_name "socks5")
         
         if [ "$USE_SERVER_MANAGER" = "1" ]; then
             # 使用服务端管理系统自动分配端口
@@ -410,6 +513,7 @@ local_port = ${SOCKS_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ SOCKS5通道已配置，远程端口将由服务端自动分配${NC}"
+            log "INFO" "配置SOCKS5通道: $SOCKS_TUNNEL_NAME, 本地端口: $SOCKS_LOCAL_PORT, 远程端口: 自动分配"
             
             # 向服务端注册
             register_tunnel_to_server "$SOCKS_TUNNEL_NAME" "socks5" "$SOCKS_LOCAL_PORT" "0"
@@ -424,6 +528,7 @@ local_ip = 127.0.0.1
 local_port = ${SOCKS_LOCAL_PORT}
 remote_port = ${SOCKS_REMOTE_PORT}
 EOF
+            log "INFO" "配置SOCKS5通道: $SOCKS_TUNNEL_NAME, 本地端口: $SOCKS_LOCAL_PORT, 远程端口: $SOCKS_REMOTE_PORT"
         fi
     fi
     
@@ -433,8 +538,8 @@ EOF
         read -p "请输入 SSH 本地端口 [默认22]: " SSH_LOCAL_PORT
         SSH_LOCAL_PORT=${SSH_LOCAL_PORT:-22}
         
-        # 生成随机名称
-        SSH_TUNNEL_NAME=$(generate_random_name "ssh")
+        # 使用稳定命名
+        SSH_TUNNEL_NAME=$(generate_stable_name "ssh")
         
         if [ "$USE_SERVER_MANAGER" = "1" ]; then
             # 使用服务端管理系统自动分配端口
@@ -448,6 +553,7 @@ local_port = ${SSH_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ SSH通道已配置，远程端口将由服务端自动分配${NC}"
+            log "INFO" "配置SSH通道: $SSH_TUNNEL_NAME, 本地端口: $SSH_LOCAL_PORT, 远程端口: 自动分配"
             
             # 向服务端注册
             register_tunnel_to_server "$SSH_TUNNEL_NAME" "ssh" "$SSH_LOCAL_PORT" "0"
@@ -462,6 +568,7 @@ local_ip = 127.0.0.1
 local_port = ${SSH_LOCAL_PORT}
 remote_port = ${SSH_REMOTE_PORT}
 EOF
+            log "INFO" "配置SSH通道: $SSH_TUNNEL_NAME, 本地端口: $SSH_LOCAL_PORT, 远程端口: $SSH_REMOTE_PORT"
         fi
     fi
     
@@ -471,8 +578,8 @@ EOF
         read -p "请输入 Web 本地端口 [默认80]: " WEB_LOCAL_PORT
         WEB_LOCAL_PORT=${WEB_LOCAL_PORT:-80}
         
-        # 生成随机名称
-        WEB_TUNNEL_NAME=$(generate_random_name "web")
+        # 使用稳定命名
+        WEB_TUNNEL_NAME=$(generate_stable_name "web")
         
         if [ "$USE_SERVER_MANAGER" = "1" ]; then
             # 使用服务端管理系统自动分配端口
@@ -486,6 +593,7 @@ local_port = ${WEB_LOCAL_PORT}
 remote_port = 0
 EOF
             echo -e "${GREEN}✓ Web通道已配置，远程端口将由服务端自动分配${NC}"
+            log "INFO" "配置Web通道: $WEB_TUNNEL_NAME, 本地端口: $WEB_LOCAL_PORT, 远程端口: 自动分配"
             
             # 向服务端注册
             register_tunnel_to_server "$WEB_TUNNEL_NAME" "web" "$WEB_LOCAL_PORT" "0"
@@ -500,6 +608,7 @@ local_ip = 127.0.0.1
 local_port = ${WEB_LOCAL_PORT}
 remote_port = ${WEB_REMOTE_PORT}
 EOF
+            log "INFO" "配置Web通道: $WEB_TUNNEL_NAME, 本地端口: $WEB_LOCAL_PORT, 远程端口: $WEB_REMOTE_PORT"
         fi
     fi
     
@@ -528,12 +637,15 @@ StartLimitBurst=3
 WantedBy=multi-user.target
 EOF
 
+    log "INFO" "创建了系统服务: $SERVICE_NAME"
+
     echo -e "${BLUE}正在启动网络监控服务...${NC}"
     systemctl daemon-reload
     systemctl enable $SERVICE_NAME
     systemctl restart $SERVICE_NAME
 
     echo -e "${GREEN}✅ 网络监控工具安装完成！${NC}"
+    log "INFO" "网络监控工具安装完成并启动服务"
     echo
     echo -e "${YELLOW}提示：服务启动后，可以运行以下命令查看通道端口信息：${NC}"
     echo -e "curl http://127.0.0.1:7400/api/status -u admin:admin"
@@ -547,11 +659,19 @@ EOF
 add_tunnel() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        log "ERROR" "尝试添加通道失败: 配置文件不存在"
         return
     fi
     
     read -p "请输入通道类型 (例如 ssh, web, rdp): " TUNNEL_TYPE
     read -p "请输入本地端口: " LOCAL_PORT
+    
+    # 验证端口号
+    if ! [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] || [ "$LOCAL_PORT" -lt 1 ] || [ "$LOCAL_PORT" -gt 65535 ]; then
+        echo -e "${RED}错误: 无效的端口号 (必须是1-65535之间的数字)${NC}"
+        log "ERROR" "尝试添加通道失败: 无效的本地端口号: $LOCAL_PORT"
+        return 1
+    fi
     
     # 检查是否配置了服务端管理系统
     USE_SERVER_MANAGER=0
@@ -560,11 +680,36 @@ add_tunnel() {
         USE_SERVER_MANAGER=1
     fi
     
-    # 生成随机隧道名称
-    #TUNNEL_NAME=$(generate_random_name "$TUNNEL_TYPE")
-    # 修改为使用主机名和类型组合的稳定命名：
+    # 使用稳定命名
     HOSTNAME=$(hostname)
     TUNNEL_NAME="${TUNNEL_TYPE}_${HOSTNAME}"
+    
+    # 检查是否已存在相同名称的通道
+    if grep -q "\[${TUNNEL_NAME}\]" "$CONFIG_FILE"; then
+        echo -e "${YELLOW}警告: 已存在名为 '${TUNNEL_NAME}' 的通道, 将被更新${NC}"
+        log "WARN" "更新现有通道: $TUNNEL_NAME, 本地端口: $LOCAL_PORT"
+        
+        # 创建临时文件
+        TEMP_FILE=$(mktemp)
+        
+        # 使用awk删除现有通道配置
+        awk -v name="$TUNNEL_NAME" '
+        BEGIN { skip = 0; }
+        /^\[/ { 
+            if ($0 == "[" name "]") {
+                skip = 1;
+            } else {
+                skip = 0;
+                print;
+            }
+            next;
+        }
+        !skip { print; }
+        ' "$CONFIG_FILE" > "$TEMP_FILE"
+        
+        # 替换原配置文件
+        mv "$TEMP_FILE" "$CONFIG_FILE"
+    fi
     
     if [ "$USE_SERVER_MANAGER" = "1" ]; then
         # 自动分配远程端口的配置
@@ -579,12 +724,20 @@ remote_port = 0
 EOF
         echo -e "${GREEN}✅ 已添加新的网络通道: ${TUNNEL_NAME}${NC}"
         echo -e "${YELLOW}远程端口将由服务端自动分配，启动服务后可通过API查询${NC}"
+        log "INFO" "添加通道: $TUNNEL_NAME, 本地端口: $LOCAL_PORT, 远程端口: 自动分配"
         
         # 向服务端注册隧道
         register_tunnel_to_server "$TUNNEL_NAME" "$TUNNEL_TYPE" "$LOCAL_PORT" "0"
     else
         # 手动指定远程端口
         read -p "请输入远程端口: " REMOTE_PORT
+        
+        # 验证远程端口号
+        if ! [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || [ "$REMOTE_PORT" -lt 1 ] || [ "$REMOTE_PORT" -gt 65535 ]; then
+            echo -e "${RED}错误: 无效的远程端口号 (必须是1-65535之间的数字)${NC}"
+            log "ERROR" "尝试添加通道失败: 无效的远程端口号: $REMOTE_PORT"
+            return 1
+        fi
         
         # 添加到配置文件
         cat >> $CONFIG_FILE <<EOF
@@ -597,6 +750,7 @@ remote_port = ${REMOTE_PORT}
 EOF
 
         echo -e "${GREEN}✅ 已添加新的网络通道: ${TUNNEL_NAME}${NC}"
+        log "INFO" "添加通道: $TUNNEL_NAME, 本地端口: $LOCAL_PORT, 远程端口: $REMOTE_PORT"
         
         # 向服务端注册隧道
         register_tunnel_to_server "$TUNNEL_NAME" "$TUNNEL_TYPE" "$LOCAL_PORT" "$REMOTE_PORT"
@@ -606,6 +760,7 @@ EOF
     if systemctl is-active --quiet $SERVICE_NAME; then
         systemctl restart $SERVICE_NAME
         echo -e "${GREEN}✅ 网络监控服务已重启${NC}"
+        log "INFO" "网络监控服务已重启"
     fi
 }
 
@@ -613,6 +768,7 @@ EOF
 remove_tunnel() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        log "ERROR" "尝试删除通道失败: 配置文件不存在"
         return
     fi
     
@@ -627,6 +783,7 @@ remove_tunnel() {
     # 检查穿透是否存在
     if ! grep -q "\[${TUNNEL_NAME}\]" "$CONFIG_FILE"; then
         echo -e "${RED}错误: 通道 '${TUNNEL_NAME}' 不存在。${NC}"
+        log "ERROR" "尝试删除不存在的通道: $TUNNEL_NAME"
         return
     fi
     
@@ -648,15 +805,22 @@ remove_tunnel() {
     !skip { print; }
     ' "$CONFIG_FILE" > "$TEMP_FILE"
     
+    # 备份原配置
+    backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$CONFIG_FILE" "$backup_file"
+    
     # 替换原配置文件
     mv "$TEMP_FILE" "$CONFIG_FILE"
     
     echo -e "${GREEN}✅ 已删除网络通道: ${TUNNEL_NAME}${NC}"
+    echo -e "${BLUE}原配置已备份到: ${backup_file}${NC}"
+    log "INFO" "已删除通道: $TUNNEL_NAME, 原配置备份到: $backup_file"
     
     # 如果网络工具已安装并运行，则重启服务
     if systemctl is-active --quiet $SERVICE_NAME; then
         systemctl restart $SERVICE_NAME
         echo -e "${GREEN}✅ 网络监控服务已重启${NC}"
+        log "INFO" "网络监控服务已重启"
     fi
 }
 
@@ -664,6 +828,7 @@ remove_tunnel() {
 view_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        log "ERROR" "尝试查看配置失败: 配置文件不存在"
         return
     fi
     
@@ -709,17 +874,33 @@ show_usage() {
             API_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT:-7400}/api/status" -u "${ADMIN_USER:-admin}:${ADMIN_PWD:-admin}" 2>/dev/null)
             
             if [ $? -eq 0 ] && [ -n "$API_INFO" ]; then
-                # 查找 SOCKS5 相关隧道
-                socks_remote_port=$(echo "$API_INFO" | grep -o '"name":"[^"]*socks[^"]*","type":"[^"]*","status":"[^"]*","local_addr":"[^"]*","plugin":"[^"]*","remote_addr":"[^"]*"' | head -1 | 
-                                   grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
-                
-                if [ -n "$socks_remote_port" ]; then
-                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
-                    echo -e "   - 代理端口: ${socks_remote_port}"
-                    echo -e "   ${GREEN}✓ 从API获取的实际端口信息${NC}"
+                if command -v jq &> /dev/null; then
+                    # 使用jq提取SOCKS5相关隧道信息
+                    socks_data=$(echo "$API_INFO" | jq -r '.proxies[] | select(.name | contains("socks")) | "\(.remote_addr)"' | head -1)
+                    
+                    if [ -n "$socks_data" ]; then
+                        socks_remote_port=$(echo "$socks_data" | grep -o ':[0-9]*' | cut -d':' -f2)
+                        echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                        echo -e "   - 代理端口: ${socks_remote_port}"
+                        echo -e "   ${GREEN}✓ 从API获取的实际端口信息${NC}"
+                    else
+                        echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                        echo -e "   - 代理端口: ${YELLOW}未找到SOCKS5代理端口信息${NC}"
+                    fi
                 else
-                    echo -e "   - 代理服务器: ${SERVER_ADDR}"
-                    echo -e "   - 代理端口: ${YELLOW}未找到SOCKS5代理端口信息${NC}"
+                    # 使用grep解析
+                    # 查找 SOCKS5 相关隧道
+                    socks_remote_port=$(echo "$API_INFO" | grep -o '"\(name\|proxy_name\)":"[^"]*socks[^"]*".*"remote_addr":"[^"]*"' | head -1 | 
+                                       grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
+                    
+                    if [ -n "$socks_remote_port" ]; then
+                        echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                        echo -e "   - 代理端口: ${socks_remote_port}"
+                        echo -e "   ${GREEN}✓ 从API获取的实际端口信息${NC}"
+                    else
+                        echo -e "   - 代理服务器: ${SERVER_ADDR}"
+                        echo -e "   - 代理端口: ${YELLOW}未找到SOCKS5代理端口信息${NC}"
+                    fi
                 fi
             else
                 echo -e "${YELLOW}无法从API获取端口信息，请手动查询${NC}"
@@ -806,18 +987,34 @@ show_usage() {
             API_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT:-7400}/api/status" -u "${ADMIN_USER:-admin}:${ADMIN_PWD:-admin}" 2>/dev/null)
             
             if [ $? -eq 0 ] && [ -n "$API_INFO" ]; then
-                # 查找SSH相关隧道
-                ssh_remote_port=$(echo "$API_INFO" | grep -o '"name":"[^"]*ssh[^"]*","type":"[^"]*","status":"[^"]*","local_addr":"[^"]*","plugin":"[^"]*","remote_addr":"[^"]*"' | head -1 | 
-                                   grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
-                
-                if [ -n "$ssh_remote_port" ]; then
-                    echo -e "使用以下命令连接到您的公司电脑:"
-                    echo -e "  ssh -p ${ssh_remote_port} 用户名@${SERVER_ADDR}"
-                    echo -e "  ${GREEN}✓ 从API获取的实际SSH端口信息${NC}"
+                if command -v jq &> /dev/null; then
+                    # 使用jq提取SSH相关隧道信息
+                    ssh_data=$(echo "$API_INFO" | jq -r '.proxies[] | select(.name | contains("ssh")) | "\(.remote_addr)"' | head -1)
+                    
+                    if [ -n "$ssh_data" ]; then
+                        ssh_remote_port=$(echo "$ssh_data" | grep -o ':[0-9]*' | cut -d':' -f2)
+                        echo -e "使用以下命令连接到您的公司电脑:"
+                        echo -e "  ssh -p ${ssh_remote_port} 用户名@${SERVER_ADDR}"
+                        echo -e "  ${GREEN}✓ 从API获取的实际SSH端口信息${NC}"
+                    else
+                        echo -e "无法从API找到SSH通道信息"
+                        echo -e "请使用以下命令查看详细信息:"
+                        echo -e "  curl http://127.0.0.1:7400/api/status -u admin:admin"
+                    fi
                 else
-                    echo -e "无法从API找到SSH通道信息"
-                    echo -e "请使用以下命令查看详细信息:"
-                    echo -e "  curl http://127.0.0.1:7400/api/status -u admin:admin"
+                    # 使用grep解析
+                    ssh_remote_port=$(echo "$API_INFO" | grep -o '"\(name\|proxy_name\)":"[^"]*ssh[^"]*".*"remote_addr":"[^"]*"' | head -1 | 
+                                      grep -o '"remote_addr":"[^"]*"' | cut -d'"' -f4 | grep -o ':[0-9]*' | cut -d':' -f2)
+                    
+                    if [ -n "$ssh_remote_port" ]; then
+                        echo -e "使用以下命令连接到您的公司电脑:"
+                        echo -e "  ssh -p ${ssh_remote_port} 用户名@${SERVER_ADDR}"
+                        echo -e "  ${GREEN}✓ 从API获取的实际SSH端口信息${NC}"
+                    else
+                        echo -e "无法从API找到SSH通道信息"
+                        echo -e "请使用以下命令查看详细信息:"
+                        echo -e "  curl http://127.0.0.1:7400/api/status -u admin:admin"
+                    fi
                 fi
             else
                 echo -e "${YELLOW}无法从API获取端口信息，请手动查询${NC}"
@@ -886,9 +1083,24 @@ uninstall_frpc() {
         return
     fi
 
+    # 询问确认
+    read -p "确定要卸载网络工具吗? 所有配置将被删除. (y/n): " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${BLUE}取消卸载操作。${NC}"
+        return
+    fi
+
     echo -e "${BLUE}正在停止网络监控服务...${NC}"
     systemctl stop $SERVICE_NAME 2>/dev/null || echo "服务已经停止"
     systemctl disable $SERVICE_NAME 2>/dev/null || echo "服务已经禁用"
+
+    # 备份配置
+    if [ -f "$CONFIG_FILE" ]; then
+        backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$CONFIG_FILE" "$backup_file"
+        echo -e "${BLUE}配置已备份到: ${backup_file}${NC}"
+        log "INFO" "卸载前配置已备份到: $backup_file"
+    fi
 
     echo -e "${BLUE}正在删除网络工具文件...${NC}"
     rm -f $SERVICE_FILE
@@ -898,12 +1110,15 @@ uninstall_frpc() {
     systemctl daemon-reload
 
     echo -e "${GREEN}✅ 网络工具已完全卸载。${NC}"
+    echo -e "${BLUE}如果您之后需要重新安装，可以使用备份的配置文件。${NC}"
+    log "INFO" "网络工具已完全卸载"
 }
 
 # 端口管理功能
 manage_ports() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}配置文件不存在，请先安装网络工具。${NC}"
+        log "ERROR" "尝试管理端口失败: 配置文件不存在"
         read -p "按回车键继续..."
         return
     fi
@@ -931,6 +1146,67 @@ manage_ports() {
     done
 }
 
+# 检查是否可以安装jq
+check_and_install_jq() {
+    if ! command -v jq &> /dev/null; then
+        echo -e "${YELLOW}jq工具未安装，尝试安装...${NC}"
+        apt update -qq && apt install -y jq && {
+            echo -e "${GREEN}jq工具安装成功${NC}"
+            log "INFO" "jq工具安装成功"
+            return 0
+        } || {
+            echo -e "${YELLOW}jq工具安装失败，将使用基本解析方式${NC}"
+            log "WARN" "jq工具安装失败"
+            return 1
+        }
+    else
+        return 0
+    fi
+}
+
+# 检查和修复API解析问题
+fix_api_parsing() {
+    # 检查API响应并保存到文件
+    if [ -f "$CONFIG_FILE" ] && grep -q "admin_port" "$CONFIG_FILE"; then
+        ADMIN_PORT=$(grep "admin_port" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+        ADMIN_USER=$(grep "admin_user" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+        ADMIN_PWD=$(grep "admin_pwd" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
+        
+        if systemctl is-active --quiet $SERVICE_NAME; then
+            echo -e "${BLUE}检查API响应格式...${NC}"
+            API_INFO=$(curl -s -m 3 "http://127.0.0.1:${ADMIN_PORT:-7400}/api/status" -u "${ADMIN_USER:-admin}:${ADMIN_PWD:-admin}" 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$API_INFO" ]; then
+                echo "$API_INFO" > "/tmp/frpc_api_sample.json"
+                echo -e "${GREEN}API响应格式检查完成，样本已保存到/tmp/frpc_api_sample.json${NC}"
+                log "INFO" "API响应格式检查完成，样本已保存到/tmp/frpc_api_sample.json"
+                
+                # 如果安装了jq，尝试验证JSON格式
+                if command -v jq &> /dev/null; then
+                    if echo "$API_INFO" | jq . &>/dev/null; then
+                        echo -e "${GREEN}API响应是有效的JSON格式${NC}"
+                        
+                        # 验证是否包含proxies字段
+                        if echo "$API_INFO" | jq -e '.proxies' &>/dev/null; then
+                            echo -e "${GREEN}API响应包含proxies字段，解析应该正常工作${NC}"
+                            log "INFO" "API响应格式正确，包含proxies字段"
+                        else
+                            echo -e "${YELLOW}API响应缺少proxies字段，这可能导致解析问题${NC}"
+                            log "WARN" "API响应缺少proxies字段，可能导致解析问题"
+                        fi
+                    else
+                        echo -e "${RED}API响应不是有效的JSON格式${NC}"
+                        log "ERROR" "API响应不是有效的JSON格式"
+                    fi
+                fi
+            else
+                echo -e "${YELLOW}无法获取API响应样本${NC}"
+                log "WARN" "无法获取API响应样本"
+            fi
+        fi
+    fi
+}
+
 # 检查是否以 root 权限运行
 if [ "$(id -u)" != "0" ]; then
     echo -e "${RED}错误: 此脚本需要 root 权限运行。${NC}"
@@ -940,6 +1216,18 @@ fi
 
 # 主函数
 main() {
+    # 确保日志目录存在
+    mkdir -p $(dirname "$LOG_FILE")
+    log "INFO" "启动FRP客户端管理脚本"
+    
+    # 检查jq是否可安装
+    check_and_install_jq
+    
+    # 尝试修复API解析问题
+    if [ -f "$CONFIG_FILE" ] && systemctl is-active --quiet $SERVICE_NAME; then
+        fix_api_parsing
+    fi
+    
     while true; do
         show_menu
         read -p "请输入选项 [1-6]: " choice
@@ -965,6 +1253,7 @@ main() {
                 ;;
             6)
                 echo -e "${GREEN}感谢使用，再见！${NC}"
+                log "INFO" "退出FRP客户端管理脚本"
                 exit 0
                 ;;
             *)
