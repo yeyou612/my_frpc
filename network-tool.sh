@@ -15,15 +15,38 @@ NC="\033[0m" # 无颜色
 
 # 定义常量 - 已修改为更隐蔽的路径和名称
 FRP_VERSION=0.62.1
-INSTALL_DIR=/usr/share/lib/.network-util         # 更隐蔽的安装目录
-SERVICE_NAME=network-monitor                      # 更隐蔽的服务名称
+INSTALL_DIR=/usr/share/lib/.network-util         #安装目录
+SERVICE_NAME=network-monitor                      # 服务名称
 SERVICE_FILE=/etc/systemd/system/${SERVICE_NAME}.service
-CONFIG_FILE=$INSTALL_DIR/network-cfg.dat         # 更隐蔽的配置文件名
+CONFIG_FILE=$INSTALL_DIR/network-cfg.dat         # 配置文件名
 
-# 获取本机 IP
+# 获取本机公网 IP
 get_local_ip() {
-    local IP=$(hostname -I | awk '{print $1}')
-    echo $IP
+    # 先尝试局域网IP作为备用
+    local LAN_IP=$(hostname -I | awk '{print $1}')
+    
+    # 尝试通过多个公共服务获取公网IP
+    local PUBLIC_IP=""
+    
+    # 尝试通过ipinfo.io获取
+    PUBLIC_IP=$(curl -s -m 5 https://ipinfo.io/ip 2>/dev/null)
+    
+    # 如果上面的失败，尝试通过ifconfig.me获取
+    if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "null" ]; then
+        PUBLIC_IP=$(curl -s -m 5 https://ifconfig.me 2>/dev/null)
+    fi
+    
+    # 如果上面的失败，尝试通过api.ipify.org获取
+    if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "null" ]; then
+        PUBLIC_IP=$(curl -s -m 5 https://api.ipify.org 2>/dev/null)
+    fi
+    
+    # 如果所有方法都失败，使用局域网IP
+    if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" = "null" ]; then
+        echo "$LAN_IP (局域网)"
+    else
+        echo "$PUBLIC_IP (公网)"
+    fi
 }
 
 # 显示主菜单
