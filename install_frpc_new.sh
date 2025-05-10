@@ -24,7 +24,10 @@ get_local_ip() {
     local IP=$(hostname -I | awk '{print $1}')
     echo $IP
 }
-
+# 生成 10000-40000 之间的随机端口
+get_random_port() {
+    echo $(( RANDOM % 30001 + 10000 ))
+}
 # 显示主菜单
 show_menu() {
     clear
@@ -212,8 +215,8 @@ EOF
     if [[ "$setup_socks" == "y" || "$setup_socks" == "Y" ]]; then
         read -p "请输入 SOCKS5 本地端口 [默认10811]: " SOCKS_LOCAL_PORT
         SOCKS_LOCAL_PORT=${SOCKS_LOCAL_PORT:-10811}
-        read -p "请输入 SOCKS5 远程端口 [建议用6000以上端口]: " SOCKS_REMOTE_PORT
-        
+       # read -p "请输入 SOCKS5 远程端口 [建议用6000以上端口]: " SOCKS_REMOTE_PORT
+        SOCKS_REMOTE_PORT=$(get_random_port)
         cat >> $CONFIG_FILE <<EOF
 
 [socks5_proxy]
@@ -229,7 +232,8 @@ EOF
     if [[ "$setup_ssh" == "y" || "$setup_ssh" == "Y" ]]; then
         read -p "请输入 SSH 本地端口 [默认22]: " SSH_LOCAL_PORT
         SSH_LOCAL_PORT=${SSH_LOCAL_PORT:-22}
-        read -p "请输入 SSH 远程端口: " SSH_REMOTE_PORT
+        # read -p "请输入 SSH 远程端口: " SSH_REMOTE_PORT
+        SSH_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
 
@@ -246,7 +250,8 @@ EOF
     if [[ "$setup_web" == "y" || "$setup_web" == "Y" ]]; then
         read -p "请输入 Web 本地端口 [默认80]: " WEB_LOCAL_PORT
         WEB_LOCAL_PORT=${WEB_LOCAL_PORT:-80}
-        read -p "请输入 Web 远程端口: " WEB_REMOTE_PORT
+        # read -p "请输入 Web 远程端口: " WEB_REMOTE_PORT
+        WEB_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
 
