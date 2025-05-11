@@ -2,7 +2,7 @@
 
 # FRP 客户端安装/卸载/管理脚本
 # 专为远程访问公司网络设计
-# 日期：2025-05-07
+# 日期：2025-05-11
 
 set -e
 
@@ -19,15 +19,21 @@ INSTALL_DIR=/usr/local/frp
 SERVICE_FILE=/etc/systemd/system/frpc.service
 CONFIG_FILE=$INSTALL_DIR/frpc.ini
 
-# 获取本机 IP
+# 获取本机信息
 get_local_ip() {
     local IP=$(hostname -I | awk '{print $1}')
     echo $IP
 }
+
+get_hostname() {
+    hostname | tr -d '\n'
+}
+
 # 生成 10000-40000 之间的随机端口
 get_random_port() {
     echo $(( RANDOM % 30001 + 10000 ))
 }
+
 # 显示主菜单
 show_menu() {
     clear
@@ -43,6 +49,7 @@ show_menu() {
     echo -e "${BLUE}========================================${NC}"
     echo -e "当前状态: $(check_status)"
     echo -e "本机 IP: $(get_local_ip)"
+    echo -e "本机主机名: $(get_hostname)"
     echo -e "${BLUE}========================================${NC}"
 }
 
@@ -195,6 +202,9 @@ install_frpc() {
         rm -rf frp_${FRP_VERSION}_linux_amd64
     fi
 
+    # 获取本机主机名
+    HOSTNAME=$(get_hostname)
+
     # 获取服务器基本配置
     read -p "请输入服务端公网 IP 或域名: " VPS_IP
     read -p "请输入服务端口 [默认7000]: " SERVER_PORT
@@ -210,20 +220,19 @@ server_port = ${SERVER_PORT}
 token = ${TOKEN}
 EOF
 
-    # 配置 SOCKS5 穿透（推荐用于远程访问）
-    read -p "是否配置 SOCKS5 代理穿透？(y/n) [推荐开启，用于远程访问公司网络]: " setup_socks
-    if [[ "$setup_socks" == "y" || "$setup_socks" == "Y" ]]; then
-        read -p "请输入 SOCKS5 本地端口 [默认10811]: " SOCKS_LOCAL_PORT
-        SOCKS_LOCAL_PORT=${SOCKS_LOCAL_PORT:-10811}
-       # read -p "请输入 SOCKS5 远程端口 [建议用6000以上端口]: " SOCKS_REMOTE_PORT
-        SOCKS_REMOTE_PORT=$(get_random_port)
+    # 配置 HTTP 代理穿透（替代SOCKS5）
+    read -p "是否配置 HTTP 代理穿透？(y/n) [推荐开启，用于远程访问公司网络]: " setup_http
+    if [[ "$setup_http" == "y" || "$setup_http" == "Y" ]]; then
+        read -p "请输入 HTTP 代理本地端口 [默认8080]: " HTTP_LOCAL_PORT
+        HTTP_LOCAL_PORT=${HTTP_LOCAL_PORT:-8080}
+        HTTP_REMOTE_PORT=$(get_random_port)
         cat >> $CONFIG_FILE <<EOF
 
-[socks5_proxy]
+[http-proxy-${HOSTNAME}]
 type = tcp
 local_ip = 127.0.0.1
-local_port = ${SOCKS_LOCAL_PORT}
-remote_port = ${SOCKS_REMOTE_PORT}
+local_port = ${HTTP_LOCAL_PORT}
+remote_port = ${HTTP_REMOTE_PORT}
 EOF
     fi
     
@@ -232,12 +241,11 @@ EOF
     if [[ "$setup_ssh" == "y" || "$setup_ssh" == "Y" ]]; then
         read -p "请输入 SSH 本地端口 [默认22]: " SSH_LOCAL_PORT
         SSH_LOCAL_PORT=${SSH_LOCAL_PORT:-22}
-        # read -p "请输入 SSH 远程端口: " SSH_REMOTE_PORT
         SSH_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
 
-[ssh]
+[ssh-${HOSTNAME}]
 type = tcp
 local_ip = 127.0.0.1
 local_port = ${SSH_LOCAL_PORT}
@@ -250,12 +258,11 @@ EOF
     if [[ "$setup_web" == "y" || "$setup_web" == "Y" ]]; then
         read -p "请输入 Web 本地端口 [默认80]: " WEB_LOCAL_PORT
         WEB_LOCAL_PORT=${WEB_LOCAL_PORT:-80}
-        # read -p "请输入 Web 远程端口: " WEB_REMOTE_PORT
         WEB_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
 
-[web]
+[web-${HOSTNAME}]
 type = tcp
 local_ip = 127.0.0.1
 local_port = ${WEB_LOCAL_PORT}
@@ -307,21 +314,29 @@ add_tunnel() {
         return
     fi
     
+    # 获取本机主机名
+    HOSTNAME=$(get_hostname)
+    
     read -p "请输入穿透名称 (英文字母，如 http, game 等): " TUNNEL_NAME
     read -p "请输入本地端口: " LOCAL_PORT
-    read -p "请输入远程端口: " REMOTE_PORT
+    read -p "请输入远程端口 [留空自动生成]: " REMOTE_PORT
     
-    # 添加到配置文件
+    # 如果远程端口为空，则随机生成
+    if [ -z "$REMOTE_PORT" ]; then
+        REMOTE_PORT=$(get_random_port)
+    fi
+    
+    # 添加到配置文件，加入主机名
     cat >> $CONFIG_FILE <<EOF
 
-[${TUNNEL_NAME}]
+[${TUNNEL_NAME}-${HOSTNAME}]
 type = tcp
 local_ip = 127.0.0.1
 local_port = ${LOCAL_PORT}
 remote_port = ${REMOTE_PORT}
 EOF
 
-    echo -e "${GREEN}✅ 已添加新的端口穿透: ${TUNNEL_NAME}${NC}"
+    echo -e "${GREEN}✅ 已添加新的端口穿透: ${TUNNEL_NAME}-${HOSTNAME}${NC}"
     
     # 如果 FRP 已安装并运行，则重启服务
     if systemctl is-active --quiet frpc; then
@@ -404,19 +419,21 @@ show_usage() {
     echo -e "FRP 客户端安装在公司电脑上，FRP 服务端安装在有公网 IP 的服务器上。"
     echo -e "通过 FRP，您可以在外部通过服务器访问公司内网资源。"
     echo
-    echo -e "${GREEN}【使用 SOCKS5 代理访问公司网络】${NC}"
-    echo -e "1. 确保您的 FRP 客户端已配置并启动 SOCKS5 代理穿透"
-    echo -e "2. 在您的手机或其他设备上设置 SOCKS5 代理:"
+    echo -e "${GREEN}【使用 HTTP 代理访问公司网络】${NC}"
+    echo -e "1. 确保您的 FRP 客户端已配置并启动 HTTP 代理穿透"
+    echo -e "2. 在您的手机或其他设备上设置 HTTP 代理:"
     
-    # 如果找到 SOCKS5 配置，显示详细信息
-    if [ -f "$CONFIG_FILE" ] && grep -q "\[socks5_proxy\]" "$CONFIG_FILE"; then
+    # 如果找到 HTTP 配置，显示详细信息
+    if [ -f "$CONFIG_FILE" ] && grep -q "\[http-proxy-" "$CONFIG_FILE"; then
         SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
-        SOCKS_REMOTE_PORT=$(grep -A 3 "\[socks5_proxy\]" "$CONFIG_FILE" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+        HTTP_REMOTE_PORT=$(grep -A 3 "\[http-proxy-" "$CONFIG_FILE" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
         echo -e "   - 代理服务器: ${SERVER_ADDR}"
-        echo -e "   - 代理端口: ${SOCKS_REMOTE_PORT}"
+        echo -e "   - 代理端口: ${HTTP_REMOTE_PORT}"
+        echo -e "   - 代理类型: HTTP"
     else
         echo -e "   - 代理服务器: 您的 FRP 服务器 IP/域名"
-        echo -e "   - 代理端口: 您配置的 SOCKS5 远程端口"
+        echo -e "   - 代理端口: 您配置的 HTTP 远程端口"
+        echo -e "   - 代理类型: HTTP"
     fi
     
     echo
@@ -432,14 +449,14 @@ show_usage() {
     echo -e "  3. 滚动到底部，点击"配置代理"→ 手动"
     echo -e "  4. 输入服务器 IP 和端口"
     echo
-    echo -e "或者使用专用的代理软件/APP (如 Shadowsocks, V2rayNG 等)，设置 SOCKS5 代理。"
+    echo -e "或者使用专用的代理软件/APP (如 Shadowsocks, V2rayNG 等)，设置 HTTP 代理。"
     echo
     echo -e "${GREEN}【SSH 远程连接】${NC}"
     
     # 如果找到 SSH 配置，显示详细信息
-    if [ -f "$CONFIG_FILE" ] && grep -q "\[ssh\]" "$CONFIG_FILE"; then
+    if [ -f "$CONFIG_FILE" ] && grep -q "\[ssh-" "$CONFIG_FILE"; then
         SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' ')
-        SSH_REMOTE_PORT=$(grep -A 3 "\[ssh\]" "$CONFIG_FILE" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
+        SSH_REMOTE_PORT=$(grep -A 3 "\[ssh-" "$CONFIG_FILE" | grep "remote_port" | cut -d'=' -f2 | tr -d ' ')
         echo -e "使用以下命令连接到您的公司电脑:"
         echo -e "  ssh -p ${SSH_REMOTE_PORT} 用户名@${SERVER_ADDR}"
     else
