@@ -160,9 +160,11 @@ download_binary_direct() {
             else
                 echo -e "${RED}下载的文件为空！${NC}"
                 rm -f "$BINARY_FILENAME"
+                return 1
             fi
         else
             echo -e "${RED}代理下载失败！${NC}"
+            return 1
         fi
     else
         # 直接下载
@@ -204,9 +206,9 @@ download_binary_direct() {
                             echo -e "${RED}代理下载失败！${NC}"
                             return 1
                         fi
-                    } else {
+                    else
                         return 1
-                    }
+                    fi
                 else
                     echo -e "${GREEN}直接下载成功！${NC}"
                     # 确保可执行
@@ -248,9 +250,9 @@ download_binary_direct() {
                         echo -e "${RED}代理下载失败！${NC}"
                         return 1
                     fi
-                } else {
+                else
                     return 1
-                }
+                fi
             fi
         else
             echo -e "${RED}直接下载失败！${NC}"
@@ -283,9 +285,9 @@ download_binary_direct() {
                     echo -e "${RED}代理下载失败！${NC}"
                     return 1
                 fi
-            } else {
+            else
                 return 1
-            }
+            fi
         fi
     fi
     
