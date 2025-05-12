@@ -113,26 +113,43 @@ list_tunnels() {
     return 0
 }
 
-# 直接从GitHub下载二进制文件
+# 改进的二进制文件下载函数，增加文件验证
 download_binary_direct() {
-    echo -e "${BLUE}正在直接下载FRP客户端二进制文件...${NC}"
+    echo -e "${BLUE}正在下载FRP客户端...${NC}"
     cd /tmp
     
     # 二进制文件的下载URL
     BINARY_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frpc_${TOOL_VERSION}_linux_amd64"
     BINARY_FILENAME="frpc_temp"
     
+    # 检查系统架构
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+        BINARY_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frpc_${TOOL_VERSION}_linux_arm64"
+        echo -e "${YELLOW}检测到ARM64架构，使用ARM64版本...${NC}"
+    elif [[ "$ARCH" == "armv7l" ]]; then
+        BINARY_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frpc_${TOOL_VERSION}_linux_arm"
+        echo -e "${YELLOW}检测到ARM架构，使用ARM版本...${NC}"
+    fi
+    
     # 尝试直接下载
-    echo -e "${YELLOW}尝试直接下载...${NC}"
+    echo -e "${YELLOW}尝试直接下载二进制文件...${NC}"
     if curl -L -o "$BINARY_FILENAME" --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
         if [ -s "$BINARY_FILENAME" ]; then
-            echo -e "${GREEN}直接下载成功！${NC}"
-            # 确保可执行
-            chmod +x "$BINARY_FILENAME"
-            # 移动到安装目录
-            mkdir -p "$INSTALL_DIR"
-            mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
-            return 0
+            # 验证文件大小 (应该至少有5MB)
+            FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+            if [ "$FILE_SIZE" -lt 5000000 ]; then
+                echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                rm -f "$BINARY_FILENAME"
+            else
+                echo -e "${GREEN}直接下载成功！${NC}"
+                # 确保可执行
+                chmod +x "$BINARY_FILENAME"
+                # 移动到安装目录
+                mkdir -p "$INSTALL_DIR"
+                mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                return 0
+            fi
         else
             echo -e "${RED}下载的文件为空！${NC}"
             rm -f "$BINARY_FILENAME"
@@ -147,13 +164,20 @@ download_binary_direct() {
         echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
         if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
             if [ -s "$BINARY_FILENAME" ]; then
-                echo -e "${GREEN}使用代理下载成功！${NC}"
-                # 确保可执行
-                chmod +x "$BINARY_FILENAME"
-                # 移动到安装目录
-                mkdir -p "$INSTALL_DIR"
-                mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
-                return 0
+                # 验证文件大小 (应该至少有5MB)
+                FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+                if [ "$FILE_SIZE" -lt 5000000 ]; then
+                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                    rm -f "$BINARY_FILENAME"
+                else
+                    echo -e "${GREEN}使用代理下载成功！${NC}"
+                    # 确保可执行
+                    chmod +x "$BINARY_FILENAME"
+                    # 移动到安装目录
+                    mkdir -p "$INSTALL_DIR"
+                    mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                    return 0
+                fi
             else
                 echo -e "${RED}下载的文件为空！${NC}"
                 rm -f "$BINARY_FILENAME"
@@ -181,13 +205,25 @@ install_client() {
     # 创建安装目录
     mkdir -p $INSTALL_DIR
     
-    # 如果是新安装，则下载并安装
-    if [ ! -f "$INSTALL_DIR/$REAL_BINARY" ]; then
-        # 直接下载二进制文件
-        if ! download_binary_direct; then
-            echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
-            return 1
-        fi
+    # 卸载可能存在的旧版本
+    echo -e "${BLUE}清理旧安装...${NC}"
+    systemctl stop $SERVICE_NAME 2>/dev/null || true
+    systemctl disable $SERVICE_NAME 2>/dev/null || true
+    rm -f $SERVICE_FILE
+    rm -f "$INSTALL_DIR/$REAL_BINARY"
+    systemctl daemon-reload
+    
+    # 下载并安装二进制文件
+    if ! download_binary_direct; then
+        echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
+        return 1
+    fi
+    
+    # 测试二进制文件是否可执行
+    echo -e "${BLUE}验证二进制文件...${NC}"
+    if ! $INSTALL_DIR/$REAL_BINARY --version &>/dev/null; then
+        echo -e "${RED}错误: 二进制文件验证失败，可能下载不完整或不兼容。${NC}"
+        return 1
     fi
 
     # 获取本机主机名
@@ -302,12 +338,25 @@ TimeoutStopSec=30s
 WantedBy=multi-user.target
 EOF
 
+    # 确保文件权限正确
+    chmod 644 $CONFIG_FILE
+    chmod 644 $SERVICE_FILE
+    chmod 755 $INSTALL_DIR/$REAL_BINARY
+
     echo -e "${BLUE}正在启动网络服务...${NC}"
     systemctl daemon-reload
     systemctl enable $SERVICE_NAME
     systemctl restart $SERVICE_NAME
+    
+    # 验证服务状态
+    sleep 1
+    if systemctl is-active --quiet $SERVICE_NAME; then
+        echo -e "${GREEN}✅ 夜游客户端安装成功并正在运行！${NC}"
+    else
+        echo -e "${YELLOW}警告: 夜游客户端已安装但服务未能正常启动，请检查系统日志。${NC}"
+        systemctl status $SERVICE_NAME
+    fi
 
-    echo -e "${GREEN}✅ 夜游客户端安装完成！${NC}"
     echo
     view_config
     echo
