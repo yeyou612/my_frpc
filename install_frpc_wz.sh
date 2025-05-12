@@ -113,9 +113,9 @@ list_tunnels() {
     return 0
 }
 
-# 从GitHub下载FRP压缩包并解压
+# 改进的下载函数
 download_binary_direct() {
-    echo -e "${BLUE}正在下载FRP客户端压缩包...${NC}"
+    echo -e "${BLUE}正在下载FRP客户端...${NC}"
     cd /tmp
     
     # 压缩包下载URL
@@ -132,257 +132,110 @@ download_binary_direct() {
         echo -e "${YELLOW}检测到ARM架构，使用ARM版本...${NC}"
     fi
     
-    # 询问是否使用代理
-    read -p "是否使用代理下载？(y/N): " use_proxy
-    if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
-        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-        echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
-        
-        # 使用代理下载
-        echo -e "${BLUE}下载中，请稍候...${NC}"
-        if curl -L -o "$ARCHIVE_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$ARCHIVE_URL"; then
-            if [ -s "$ARCHIVE_FILENAME" ]; then
-                # 验证文件大小 (应该至少有1MB)
-                FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
-                if [ "$FILE_SIZE" -lt 1000000 ]; then
-                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
-                    echo -e "${RED}请检查代理设置或尝试其他下载方式。${NC}"
-                    rm -f "$ARCHIVE_FILENAME"
-                    return 1
-                else
-                    echo -e "${GREEN}使用代理下载成功！正在解压...${NC}"
-                    # 解压压缩包
-                    mkdir -p frp_temp
-                    tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
-                    
-                    if [ -f "frp_temp/frpc" ]; then
-                        # 移动到安装目录
-                        mkdir -p "$INSTALL_DIR"
-                        mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
-                        chmod +x "$INSTALL_DIR/$REAL_BINARY"
-                        echo -e "${GREEN}客户端安装成功！${NC}"
-                        # 清理临时文件
-                        rm -rf frp_temp
-                        rm -f "$ARCHIVE_FILENAME"
-                        return 0
-                    else
-                        echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
-                        # 清理临时文件
-                        rm -rf frp_temp
+    # 提供多种下载方式选择
+    echo -e "${BLUE}请选择下载方式:${NC}"
+    echo -e "${GREEN}1.${NC} 使用curl直接下载"
+    echo -e "${GREEN}2.${NC} 使用curl通过代理下载"
+    echo -e "${GREEN}3.${NC} 使用wget直接下载"
+    echo -e "${GREEN}4.${NC} 使用wget通过代理下载"
+    read -p "请选择下载方式 [1-4]: " download_method
+    
+    case $download_method in
+        1)
+            echo -e "${YELLOW}使用curl直接下载...${NC}"
+            download_command="curl -L -o $ARCHIVE_FILENAME --connect-timeout 30 --max-time 600 $ARCHIVE_URL"
+            ;;
+        2)
+            read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+            echo -e "${YELLOW}使用curl通过代理 ${proxy_address} 下载...${NC}"
+            download_command="curl -L -o $ARCHIVE_FILENAME --proxy http://${proxy_address} --connect-timeout 30 --max-time 600 $ARCHIVE_URL"
+            ;;
+        3)
+            echo -e "${YELLOW}使用wget直接下载...${NC}"
+            download_command="wget -O $ARCHIVE_FILENAME --timeout=30 --tries=3 $ARCHIVE_URL"
+            ;;
+        4)
+            read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+            echo -e "${YELLOW}使用wget通过代理 ${proxy_address} 下载...${NC}"
+            download_command="wget -O $ARCHIVE_FILENAME -e use_proxy=yes -e http_proxy=http://${proxy_address} --timeout=30 --tries=3 $ARCHIVE_URL"
+            ;;
+        *)
+            echo -e "${RED}无效选择，使用默认方式 (curl直接下载)${NC}"
+            download_command="curl -L -o $ARCHIVE_FILENAME --connect-timeout 30 --max-time 600 $ARCHIVE_URL"
+            ;;
+    esac
+    
+    # 显示下载命令
+    echo -e "${BLUE}执行命令: ${download_command}${NC}"
+    echo -e "${BLUE}下载中，请稍候...这可能需要几分钟时间...${NC}"
+    
+    # 执行下载
+    if eval $download_command; then
+        if [ -s "$ARCHIVE_FILENAME" ]; then
+            # 验证文件大小 (应该至少有1MB)
+            FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
+            if [ "$FILE_SIZE" -lt 1000000 ]; then
+                echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
+                echo -e "${RED}文件内容预览:${NC}"
+                head -c 100 "$ARCHIVE_FILENAME" | hexdump -C
+                rm -f "$ARCHIVE_FILENAME"
+                
+                # 尝试使用备用下载源
+                echo -e "${YELLOW}尝试从备用源下载...${NC}"
+                # 使用gitee作为备用
+                BACKUP_URL="https://gitee.com/mirrors/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+                echo -e "${BLUE}尝试从备用源下载: ${BACKUP_URL}${NC}"
+                
+                if curl -L -o "$ARCHIVE_FILENAME" --connect-timeout 30 --max-time 600 "$BACKUP_URL"; then
+                    FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
+                    if [ "$FILE_SIZE" -lt 1000000 ]; then
+                        echo -e "${RED}从备用源下载的文件也过小，下载失败。${NC}"
                         rm -f "$ARCHIVE_FILENAME"
                         return 1
+                    else
+                        echo -e "${GREEN}从备用源下载成功！${NC}"
                     fi
+                else
+                    echo -e "${RED}从备用源下载也失败了。${NC}"
+                    return 1
                 fi
+            fi
+            
+            echo -e "${GREEN}下载成功！正在解压...${NC}"
+            # 解压压缩包
+            mkdir -p frp_temp
+            tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
+            
+            if [ -f "frp_temp/frpc" ]; then
+                # 移动到安装目录
+                mkdir -p "$INSTALL_DIR"
+                mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
+                chmod +x "$INSTALL_DIR/$REAL_BINARY"
+                echo -e "${GREEN}客户端二进制文件安装成功！${NC}"
+                # 清理临时文件
+                rm -rf frp_temp
+                rm -f "$ARCHIVE_FILENAME"
+                return 0
             else
-                echo -e "${RED}下载的文件为空！${NC}"
+                echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
+                echo -e "${YELLOW}解压后的文件列表:${NC}"
+                ls -la frp_temp/
+                # 清理临时文件
+                rm -rf frp_temp
                 rm -f "$ARCHIVE_FILENAME"
                 return 1
             fi
         else
-            echo -e "${RED}代理下载失败！${NC}"
+            echo -e "${RED}下载的文件为空！${NC}"
+            rm -f "$ARCHIVE_FILENAME"
             return 1
         fi
     else
-        # 直接下载
-        echo -e "${YELLOW}尝试直接从GitHub下载...${NC}"
-        echo -e "${BLUE}下载中，请稍候...${NC}"
-        if curl -L -o "$ARCHIVE_FILENAME" --connect-timeout 15 --max-time 300 "$ARCHIVE_URL"; then
-            if [ -s "$ARCHIVE_FILENAME" ]; then
-                # 验证文件大小 (应该至少有1MB)
-                FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
-                if [ "$FILE_SIZE" -lt 1000000 ]; then
-                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
-                    echo -e "${RED}可能需要使用代理或手动下载。${NC}"
-                    rm -f "$ARCHIVE_FILENAME"
-                    
-                    # 如果直接下载失败，询问是否尝试使用代理
-                    read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
-                    if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
-                        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-                        echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
-                        echo -e "${BLUE}下载中，请稍候...${NC}"
-                        if curl -L -o "$ARCHIVE_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$ARCHIVE_URL"; then
-                            if [ -s "$ARCHIVE_FILENAME" ]; then
-                                FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
-                                if [ "$FILE_SIZE" -lt 1000000 ]; then
-                                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
-                                    rm -f "$ARCHIVE_FILENAME"
-                                    return 1
-                                else
-                                    echo -e "${GREEN}使用代理下载成功！正在解压...${NC}"
-                                    # 解压压缩包
-                                    mkdir -p frp_temp
-                                    tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
-                                    
-                                    if [ -f "frp_temp/frpc" ]; then
-                                        # 移动到安装目录
-                                        mkdir -p "$INSTALL_DIR"
-                                        mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
-                                        chmod +x "$INSTALL_DIR/$REAL_BINARY"
-                                        echo -e "${GREEN}客户端安装成功！${NC}"
-                                        # 清理临时文件
-                                        rm -rf frp_temp
-                                        rm -f "$ARCHIVE_FILENAME"
-                                        return 0
-                                    else
-                                        echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
-                                        # 清理临时文件
-                                        rm -rf frp_temp
-                                        rm -f "$ARCHIVE_FILENAME"
-                                        return 1
-                                    fi
-                                fi
-                            else
-                                echo -e "${RED}下载的文件为空！${NC}"
-                                rm -f "$ARCHIVE_FILENAME"
-                                return 1
-                            fi
-                        else
-                            echo -e "${RED}代理下载失败！${NC}"
-                            return 1
-                        fi
-                    else
-                        return 1
-                    fi
-                else
-                    echo -e "${GREEN}直接下载成功！正在解压...${NC}"
-                    # 解压压缩包
-                    mkdir -p frp_temp
-                    tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
-                    
-                    if [ -f "frp_temp/frpc" ]; then
-                        # 移动到安装目录
-                        mkdir -p "$INSTALL_DIR"
-                        mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
-                        chmod +x "$INSTALL_DIR/$REAL_BINARY"
-                        echo -e "${GREEN}客户端安装成功！${NC}"
-                        # 清理临时文件
-                        rm -rf frp_temp
-                        rm -f "$ARCHIVE_FILENAME"
-                        return 0
-                    else
-                        echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
-                        # 清理临时文件
-                        rm -rf frp_temp
-                        rm -f "$ARCHIVE_FILENAME"
-                        return 1
-                    fi
-                fi
-            else
-                echo -e "${RED}下载的文件为空！${NC}"
-                rm -f "$ARCHIVE_FILENAME"
-                
-                # 如果直接下载失败，询问是否尝试使用代理
-                read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
-                if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
-                    read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-                    echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
-                    echo -e "${BLUE}下载中，请稍候...${NC}"
-                    if curl -L -o "$ARCHIVE_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$ARCHIVE_URL"; then
-                        if [ -s "$ARCHIVE_FILENAME" ]; then
-                            FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
-                            if [ "$FILE_SIZE" -lt 1000000 ]; then
-                                echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
-                                rm -f "$ARCHIVE_FILENAME"
-                                return 1
-                            else
-                                echo -e "${GREEN}使用代理下载成功！正在解压...${NC}"
-                                # 解压压缩包
-                                mkdir -p frp_temp
-                                tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
-                                
-                                if [ -f "frp_temp/frpc" ]; then
-                                    # 移动到安装目录
-                                    mkdir -p "$INSTALL_DIR"
-                                    mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
-                                    chmod +x "$INSTALL_DIR/$REAL_BINARY"
-                                    echo -e "${GREEN}客户端安装成功！${NC}"
-                                    # 清理临时文件
-                                    rm -rf frp_temp
-                                    rm -f "$ARCHIVE_FILENAME"
-                                    return 0
-                                else
-                                    echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
-                                    # 清理临时文件
-                                    rm -rf frp_temp
-                                    rm -f "$ARCHIVE_FILENAME"
-                                    return 1
-                                fi
-                            fi
-                        else
-                            echo -e "${RED}下载的文件为空！${NC}"
-                            rm -f "$ARCHIVE_FILENAME"
-                            return 1
-                        fi
-                    else
-                        echo -e "${RED}代理下载失败！${NC}"
-                        return 1
-                    fi
-                else
-                    return 1
-                fi
-            fi
-        else
-            echo -e "${RED}直接下载失败！${NC}"
-            
-            # 如果直接下载失败，询问是否尝试使用代理
-            read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
-            if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
-                read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-                echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
-                echo -e "${BLUE}下载中，请稍候...${NC}"
-                if curl -L -o "$ARCHIVE_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$ARCHIVE_URL"; then
-                    if [ -s "$ARCHIVE_FILENAME" ]; then
-                        FILE_SIZE=$(stat -c%s "$ARCHIVE_FILENAME")
-                        if [ "$FILE_SIZE" -lt 1000000 ]; then
-                            echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的压缩包。${NC}"
-                            rm -f "$ARCHIVE_FILENAME"
-                            return 1
-                        else
-                            echo -e "${GREEN}使用代理下载成功！正在解压...${NC}"
-                            # 解压压缩包
-                            mkdir -p frp_temp
-                            tar -xzf "$ARCHIVE_FILENAME" -C frp_temp --strip-components=1
-                            
-                            if [ -f "frp_temp/frpc" ]; then
-                                # 移动到安装目录
-                                mkdir -p "$INSTALL_DIR"
-                                mv "frp_temp/frpc" "$INSTALL_DIR/$REAL_BINARY"
-                                chmod +x "$INSTALL_DIR/$REAL_BINARY"
-                                echo -e "${GREEN}客户端安装成功！${NC}"
-                                # 清理临时文件
-                                rm -rf frp_temp
-                                rm -f "$ARCHIVE_FILENAME"
-                                return 0
-                            else
-                                echo -e "${RED}解压后未找到frpc文件，安装失败。${NC}"
-                                # 清理临时文件
-                                rm -rf frp_temp
-                                rm -f "$ARCHIVE_FILENAME"
-                                return 1
-                            fi
-                        fi
-                    else
-                        echo -e "${RED}下载的文件为空！${NC}"
-                        rm -f "$ARCHIVE_FILENAME"
-                        return 1
-                    fi
-                else
-                    echo -e "${RED}代理下载失败！${NC}"
-                    return 1
-                fi
-            else
-                return 1
-            fi
-        fi
+        echo -e "${RED}下载失败，命令返回错误！${NC}"
+        return 1
     fi
     
-    echo -e "${RED}所有下载方法均失败，请手动下载或检查网络连接。${NC}"
-    echo -e "${YELLOW}您可以手动下载文件:${NC}"
-    echo -e "${YELLOW}1. 在有网络条件的电脑上下载: ${ARCHIVE_URL}${NC}"
-    echo -e "${YELLOW}2. 将下载的文件上传到服务器并解压${NC}"
-    echo -e "${YELLOW}3. 将解压后的frpc文件复制到 ${INSTALL_DIR} 目录，并重命名为 ${REAL_BINARY}${NC}"
-    echo -e "${YELLOW}4. 确保文件有执行权限，然后重新运行脚本${NC}"
+    echo -e "${RED}所有下载方法均失败，请检查网络连接或考虑手动安装。${NC}"
     return 1
 }
 
