@@ -113,7 +113,7 @@ list_tunnels() {
     return 0
 }
 
-# 改进的二进制文件下载函数，增加文件验证
+# 改进的直接从GitHub下载函数
 download_binary_direct() {
     echo -e "${BLUE}正在下载FRP客户端...${NC}"
     cd /tmp
@@ -132,43 +132,22 @@ download_binary_direct() {
         echo -e "${YELLOW}检测到ARM架构，使用ARM版本...${NC}"
     fi
     
-    # 尝试直接下载
-    echo -e "${YELLOW}尝试直接下载二进制文件...${NC}"
-    if curl -L -o "$BINARY_FILENAME" --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
-        if [ -s "$BINARY_FILENAME" ]; then
-            # 验证文件大小 (应该至少有5MB)
-            FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
-            if [ "$FILE_SIZE" -lt 5000000 ]; then
-                echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
-                rm -f "$BINARY_FILENAME"
-            else
-                echo -e "${GREEN}直接下载成功！${NC}"
-                # 确保可执行
-                chmod +x "$BINARY_FILENAME"
-                # 移动到安装目录
-                mkdir -p "$INSTALL_DIR"
-                mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
-                return 0
-            fi
-        else
-            echo -e "${RED}下载的文件为空！${NC}"
-            rm -f "$BINARY_FILENAME"
-        fi
-    else
-        echo -e "${RED}直接下载失败，建议使用代理。${NC}"
-    fi
-    
-    # 如果直接下载失败，尝试使用代理
-    read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
-    if [ -n "$proxy_address" ]; then
+    # 询问是否使用代理
+    read -p "是否使用代理下载？(y/N): " use_proxy
+    if [[ "$use_proxy" == "y" || "$use_proxy" == "Y" ]]; then
+        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
         echo -e "${YELLOW}使用代理下载: ${proxy_address}${NC}"
+        
+        # 使用代理下载
         if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
             if [ -s "$BINARY_FILENAME" ]; then
                 # 验证文件大小 (应该至少有5MB)
                 FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
                 if [ "$FILE_SIZE" -lt 5000000 ]; then
                     echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                    echo -e "${RED}请检查代理设置或尝试其他下载方式。${NC}"
                     rm -f "$BINARY_FILENAME"
+                    return 1
                 else
                     echo -e "${GREEN}使用代理下载成功！${NC}"
                     # 确保可执行
@@ -185,9 +164,137 @@ download_binary_direct() {
         else
             echo -e "${RED}代理下载失败！${NC}"
         fi
+    else
+        # 直接下载
+        echo -e "${YELLOW}尝试直接从GitHub下载...${NC}"
+        if curl -L -o "$BINARY_FILENAME" --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+            if [ -s "$BINARY_FILENAME" ]; then
+                # 验证文件大小 (应该至少有5MB)
+                FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+                if [ "$FILE_SIZE" -lt 5000000 ]; then
+                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                    echo -e "${RED}可能需要使用代理或手动下载。${NC}"
+                    rm -f "$BINARY_FILENAME"
+                    
+                    # 如果直接下载失败，询问是否尝试使用代理
+                    read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
+                    if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
+                        read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+                        echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
+                        if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+                            if [ -s "$BINARY_FILENAME" ]; then
+                                FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+                                if [ "$FILE_SIZE" -lt 5000000 ]; then
+                                    echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                                    rm -f "$BINARY_FILENAME"
+                                    return 1
+                                else
+                                    echo -e "${GREEN}使用代理下载成功！${NC}"
+                                    chmod +x "$BINARY_FILENAME"
+                                    mkdir -p "$INSTALL_DIR"
+                                    mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                                    return 0
+                                fi
+                            else
+                                echo -e "${RED}下载的文件为空！${NC}"
+                                rm -f "$BINARY_FILENAME"
+                                return 1
+                            fi
+                        else
+                            echo -e "${RED}代理下载失败！${NC}"
+                            return 1
+                        fi
+                    } else {
+                        return 1
+                    }
+                else
+                    echo -e "${GREEN}直接下载成功！${NC}"
+                    # 确保可执行
+                    chmod +x "$BINARY_FILENAME"
+                    # 移动到安装目录
+                    mkdir -p "$INSTALL_DIR"
+                    mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                    return 0
+                fi
+            else
+                echo -e "${RED}下载的文件为空！${NC}"
+                rm -f "$BINARY_FILENAME"
+                
+                # 如果直接下载失败，询问是否尝试使用代理
+                read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
+                if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
+                    read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+                    echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
+                    if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+                        if [ -s "$BINARY_FILENAME" ]; then
+                            FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+                            if [ "$FILE_SIZE" -lt 5000000 ]; then
+                                echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                                rm -f "$BINARY_FILENAME"
+                                return 1
+                            else
+                                echo -e "${GREEN}使用代理下载成功！${NC}"
+                                chmod +x "$BINARY_FILENAME"
+                                mkdir -p "$INSTALL_DIR"
+                                mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                                return 0
+                            fi
+                        else
+                            echo -e "${RED}下载的文件为空！${NC}"
+                            rm -f "$BINARY_FILENAME"
+                            return 1
+                        fi
+                    else
+                        echo -e "${RED}代理下载失败！${NC}"
+                        return 1
+                    fi
+                } else {
+                    return 1
+                }
+            fi
+        else
+            echo -e "${RED}直接下载失败！${NC}"
+            
+            # 如果直接下载失败，询问是否尝试使用代理
+            read -p "直接下载失败，是否尝试使用代理？(y/N): " try_proxy
+            if [[ "$try_proxy" == "y" || "$try_proxy" == "Y" ]]; then
+                read -p "请输入代理地址和端口 (格式: ip:port): " proxy_address
+                echo -e "${YELLOW}使用代理重试下载: ${proxy_address}${NC}"
+                if curl -L -o "$BINARY_FILENAME" --proxy http://${proxy_address} --connect-timeout 15 --max-time 300 "$BINARY_URL"; then
+                    if [ -s "$BINARY_FILENAME" ]; then
+                        FILE_SIZE=$(stat -c%s "$BINARY_FILENAME")
+                        if [ "$FILE_SIZE" -lt 5000000 ]; then
+                            echo -e "${RED}下载的文件过小 ($FILE_SIZE 字节)，可能不是有效的二进制文件。${NC}"
+                            rm -f "$BINARY_FILENAME"
+                            return 1
+                        else
+                            echo -e "${GREEN}使用代理下载成功！${NC}"
+                            chmod +x "$BINARY_FILENAME"
+                            mkdir -p "$INSTALL_DIR"
+                            mv "$BINARY_FILENAME" "$INSTALL_DIR/$REAL_BINARY"
+                            return 0
+                        fi
+                    else
+                        echo -e "${RED}下载的文件为空！${NC}"
+                        rm -f "$BINARY_FILENAME"
+                        return 1
+                    fi
+                else
+                    echo -e "${RED}代理下载失败！${NC}"
+                    return 1
+                fi
+            } else {
+                return 1
+            }
+        fi
     fi
     
     echo -e "${RED}所有下载方法均失败，请手动下载或检查网络连接。${NC}"
+    echo -e "${YELLOW}您可以手动下载文件:${NC}"
+    echo -e "${YELLOW}1. 在有网络条件的电脑上下载: ${BINARY_URL}${NC}"
+    echo -e "${YELLOW}2. 将下载的文件上传到服务器的 ${INSTALL_DIR} 目录${NC}"
+    echo -e "${YELLOW}3. 将文件重命名为 ${REAL_BINARY} 并确保有执行权限${NC}"
+    echo -e "${YELLOW}4. 然后重新运行脚本${NC}"
     return 1
 }
 
