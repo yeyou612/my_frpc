@@ -9,7 +9,7 @@ bash <(curl -s https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_f
 
 bash <(curl -s https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc.sh)
 
-sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc_new.sh)"
+bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc_new.sh)"
 
 sudo bash -c "$(wget -O- https://raw.githubusercontent.com/yeyou612/my_frpc/main/install_frpc_1.sh)"
 
